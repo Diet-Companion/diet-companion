@@ -1,0 +1,41 @@
+# Staff scope lint (guardrail G2, S-GEN-025, S-BA-035).
+# Runs from the BASE branch via pull_request_target, so a PR cannot change the rules it is checked against.
+# It never checks out or runs PR code: it only reads the PR's file list and commit messages through the API.
+name: staff-scope-lint
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  scope-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check agent branch scope and Staff-Run-Id trailer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_REF" in
+            agent/analyst/*)            allow='^(requirements/[^/]+/REQ-[0-9]+(\.tc\.[a-z0-9]+|\.md)$)' ;;
+            agent/knowledge-drafting/*) allow='^knowledge/(rules/[^/]+/R-[0-9]+\.md|product-core\.md|discovered/.+)$' ;;
+            agent/*)                    echo "::error::Unknown agent branch prefix '$HEAD_REF'; failing closed (S-ARCH-003)."; exit 1 ;;
+            *)                          echo "Human branch '$HEAD_REF': no agent scope applies."; exit 0 ;;
+          esac
+          if [ "$HEAD_REPO" != "$REPO" ]; then echo "::error::Agent branches must live in $REPO."; exit 1; fi
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          bad=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! printf '%s\n' "$f" | grep -Eq "$allow"; then
+              echo "::error file=$f::Outside this agent's path scope (S-BA-035)."; bad=1
+            fi
+          done <<< "$files"
+          missing=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '.[] | select(.commit.message | test("(?m)^Staff-Run-Id: \\S+") | not) | .sha[0:7]')
+          if [ -n "$missing" ]; then echo "::error::Agent commits without a Staff-Run-Id trailer (S-GEN-029): $missing"; bad=1; fi
+          exit $bad
