@@ -25,7 +25,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 59b195c6d37b78cfd4eb20dfe902d8e228696287
+  STAFF_SHA: ace9226364cff775b027333ce9e52f59580a039e
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   ANALYST_BOT_LOGIN: diet-companion-analyst[bot]
@@ -38,7 +38,7 @@ env:
 # group, so they can't displace a queued Analyst run.
 concurrency:
   group: >-
-    ${{ ((github.event_name == 'issues' && github.event.label.name == 'analyst:intake') ||
+    ${{ ((github.event_name == 'issues' && github.event.label.name == 'ba:intake') ||
          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/analyst')))
         && format('staff-analyst-{0}', github.event.issue.number)
         || format('staff-analyst-noop-{0}', github.run_id) }}
@@ -50,10 +50,10 @@ jobs:
     if: >-
       github.event.issue.pull_request == null &&
       github.event.sender.type != 'Bot' &&
-      ((github.event_name == 'issues' && github.event.label.name == 'analyst:intake') ||
+      ((github.event_name == 'issues' && github.event.label.name == 'ba:intake') ||
        (github.event_name == 'issue_comment' &&
         github.event.comment.user.type != 'Bot' &&
-        contains(github.event.issue.labels.*.name, 'analyst:intake') &&
+        contains(github.event.issue.labels.*.name, 'ba:intake') &&
         contains(github.event.comment.body, '/analyst')))
     runs-on: ubuntu-24.04
     timeout-minutes: 5

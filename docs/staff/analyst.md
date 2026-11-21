@@ -25,7 +25,7 @@ Optional: set `ANALYST_MODEL` to override the default model, `claude-sonnet-5-5`
 ## Work an intake
 
 1. **Open an intake issue.** Describe what you want, in one area from `.staff/areas.yml` (diet-rules, budget, journal, measurements or shopping). Keep personal data and secrets out of it: a run with either fails closed.
-2. **Add the `analyst:intake` label.** This starts a run. Only labels and comments from accounts in staff's `governance/operators.yml` count. Anyone else's events are denied, and nothing is posted.
+2. **Add the `ba:intake` label.** This starts a run. Only labels and comments from accounts in staff's `governance/operators.yml` count. Anyone else's events are denied, and nothing is posted.
 3. **Answer the questions** in a comment, one per line, for example:
 
    ```
