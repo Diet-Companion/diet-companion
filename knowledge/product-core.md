@@ -1,25 +1,40 @@
 # Product core
 
-> **Draft, human-owned (S-GEN-018).** Seeded only from the operator's intake statement. Nothing here is a confirmed rule yet; the Analyst's kickoff questions and the ready gates fill it in.
+> **Human-owned (S-GEN-018).** Written from the operator's vision statement of 2026-11-21. The journeys, glossary and priorities are the operator's words; invariants and details are confirmed later through the Analyst's kickoff questions and the ready gates.
 
-## Purpose
-A personal diet companion for one person following a diet they define themselves. It keeps the allowed products, calculates the daily calorie budget, holds a daily food journal against that budget, tracks body measurements over time, and plans the weekly products to buy.
+## Vision
+Replace today's manual routine, a nutrient spreadsheet plus a Claude chat that does the arithmetic and looks up missing labels, with one personal app on the phone. Each day is planned, then logged, then compared against target ranges; each Saturday the week's shopping is planned by shop and the body is measured. Adding a product or a repeat dish should take seconds.
+
+There are no forbidden products. Any product may be eaten; the only rule is that each day's totals fit inside the daily target ranges.
+
+## Today (what the app replaces)
+- A spreadsheet of product labels: calories, fat, protein and other nutrients, plus the shop each product is bought in.
+- When a product is not in the spreadsheet, Claude looks its nutrient values up online.
+- Claude does the daily planning and comparison by hand in chat.
 
 ## Users and roles
-- **Owner** — the single user. Defines the diet, logs food and measurements, plans shopping. No other roles.
+- **Owner**: the single user. No sign-up, no sharing, no other roles.
 
-## Core journeys (to confirm)
-1. Define the diet: allowed products and the budget rule.
-2. Log today's food and see the remaining budget.
-3. Record body measurements and see the trend.
-4. Plan next week's products and get a shopping list.
+## Core journeys
+1. **Plan the day.** Each morning, plan what to eat at each of five meals: breakfast, brunch, lunch, afternoon snack and dinner.
+2. **Log and compare.** During the day, log what was actually eaten, and compare it with the plan and with the daily target ranges.
+3. **Keep the catalog.** Add products, with nutrients and shop, from a photo of the label, or by looking the values up when there is no label. Save repeat dishes, built from products, so they can be planned and logged in one step.
+4. **Plan the week's shopping.** Every Saturday morning, plan the products to buy for the coming week, grouped by shop.
+5. **Measure.** Every Saturday, record body measurements and see the trend over the weeks.
 
-## Glossary (to confirm)
-- **Allowed product** — a food the diet permits.
-- **Daily calorie budget** — the calories allowed for one day.
-- **Journal entry** — a food eaten on a day, with its amount.
-- **Measurement** — a dated body measurement.
-- **Weekly plan** — products chosen for the coming week; the shopping list derives from it.
+## Glossary
+- **Product**: a food with its nutrient values (calories, fat, protein and others) and the shop it is bought in.
+- **Label**: the nutrient panel on a product's package; the source of a product's values.
+- **Dish**: a saved, reusable combination of products with amounts, prepared repeatedly.
+- **Meal**: one of the five daily slots: breakfast, brunch, lunch, afternoon snack, dinner.
+- **Day plan**: the products and dishes planned per meal for one day.
+- **Log entry**: a product or dish actually eaten at a meal, with its amount.
+- **Daily targets**: ranges (minimum to maximum) for calories, protein and fat. A day is on target when each total falls inside its range.
+- **Weekly shopping plan**: the products to buy for the coming week, grouped by shop.
+- **Measurement**: a dated set of body measurements, taken weekly.
+
+## Not in scope (for now)
+_None stated yet. The kickoff interview confirms it._
 
 ## Invariants
 _None confirmed yet._

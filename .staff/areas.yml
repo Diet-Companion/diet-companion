@@ -1,12 +1,12 @@
 # Path-to-area map (S-GEN-060). Human-only file (S-GEN-025).
 areas:
-  diet-rules:     # allowed and forbidden products, portions, the diet's own rules
-    paths: [requirements/diet-rules/**, knowledge/rules/diet-rules/**]
-  budget:         # daily calorie budget and how it is calculated
-    paths: [requirements/budget/**, knowledge/rules/budget/**]
-  journal:        # daily food journal against the budget
+  catalog:        # products (nutrients, shop), label photos, online lookup, saved dishes
+    paths: [requirements/catalog/**, knowledge/rules/catalog/**]
+  targets:        # daily target ranges for calories, protein and fat
+    paths: [requirements/targets/**, knowledge/rules/targets/**]
+  journal:        # the five-meal day plan, the actual log, and the comparison with plan and targets
     paths: [requirements/journal/**, knowledge/rules/journal/**]
-  measurements:   # body measurements and trends
+  measurements:   # weekly body measurements and trends
     paths: [requirements/measurements/**, knowledge/rules/measurements/**]
-  shopping:       # weekly product plan and shopping list
+  shopping:       # the Saturday plan for the coming week, grouped by shop
     paths: [requirements/shopping/**, knowledge/rules/shopping/**]
