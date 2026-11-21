@@ -1,0 +1,6 @@
+# Product contract: residency, model endpoint, testability (S-DATA-001, S-DATA-002, S-TESTAB-001).
+# Human-only file (S-GEN-025). Checks read it from the base branch.
+residency:
+  regions: unrestricted        # agents only see synthetic test data and requirements, never real user data (S-DATA-004)
+model_endpoint: anthropic-api  # Anthropic API via the ANTHROPIC_API_KEY secret in GitHub Actions
+testability: []                # no S-TESTAB items yet; the Analyst needs none (S-BA-045)
