@@ -22,6 +22,21 @@ gh variable set AGENTS_ENABLED --body false --repo Diet-Companion/diet-companion
 
 Optional: set `ANALYST_MODEL` to override the default model, `claude-sonnet-5-5`.
 
+## Model access and cost
+
+Runs use your Claude subscription, not the Console API. The workflow reads the `CLAUDE_CODE_OAUTH_TOKEN` secret, a long-lived token you create locally:
+
+```sh
+claude setup-token        # prints the token; copy it
+pbpaste | gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo Diet-Companion/diet-companion
+pbcopy < /dev/null        # clear the clipboard
+```
+
+- Agent runs share your subscription's usage limits with your own Claude sessions. A run that hits the limit fails, and you rerun it with `/analyst` later.
+- `--max-budget-usd 3` still applies, but to the CLI's notional API-price cost. It stops a runaway run; it is not money spent.
+- The token is your personal credential. It is an exception to S-SEC-008, which asks for short-lived per-job tokens. Deleting the secret stops CI from using it. To invalidate the token itself, revoke it in your claude.ai account settings.
+- Your subscription's data settings apply to these runs. The Analyst only sees the public repo and intake issues, never personal data (S-DATA-004).
+
 ## Work an intake
 
 1. **Open an intake issue.** Describe what you want, in one area from `.staff/areas.yml` (diet-rules, budget, journal, measurements or shopping). Keep personal data and secrets out of it: a run with either fails closed.
