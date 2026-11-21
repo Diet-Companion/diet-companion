@@ -194,6 +194,9 @@ jobs:
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           DISABLE_AUTOUPDATER: "1"
         run: |
+          # Actions runs steps with bash -e; turn it off so a failing claude still reaches the
+          # exit-code and stderr handling below.
+          set +e
           set -uo pipefail
           if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
             echo "::error::The CLAUDE_CODE_OAUTH_TOKEN secret is not set"
