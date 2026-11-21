@@ -229,6 +229,16 @@ jobs:
             echo claude_failed > "$STAFF_REASON_FILE"; exit 1
           fi
           # A non-zero exit with an envelope (an error, the turn or budget limit) is judged next.
+          # A run that cost nothing never produced model text, so its result is a CLI or API error
+          # message (bad token, unknown model, usage limit). Print only that case, truncated.
+          if [ "$rc" -ne 0 ]; then
+            python - "$WORK/envelope.json" <<'PY' || true
+          import json, sys
+          env = json.load(open(sys.argv[1]))
+          if env.get("is_error") and not env.get("total_cost_usd"):
+              print("::error::claude: " + " ".join(str(env.get("result", "")).split())[:300])
+          PY
+          fi
 
       - name: Validate the output (schema, harness checks, cost)
         run: |
