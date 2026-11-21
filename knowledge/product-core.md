@@ -5,6 +5,8 @@
 ## Vision
 Replace today's manual routine, a nutrient spreadsheet plus a Claude chat that does the arithmetic and looks up missing labels, with one personal app on the phone. Each day is planned, then logged, then compared against target ranges; each Saturday the week's shopping is planned by shop and the body is measured. Adding a product or a repeat dish should take seconds.
 
+There are no forbidden products. Any product may be eaten; the only rule is that each day's totals fit inside the daily target ranges.
+
 ## Today (what the app replaces)
 - A spreadsheet of product labels: calories, fat, protein and other nutrients, plus the shop each product is bought in.
 - When a product is not in the spreadsheet, Claude looks its nutrient values up online.
