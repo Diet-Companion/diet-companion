@@ -32,7 +32,7 @@ permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016).
-  STAFF_SHA: STAFF_SHA_PLACEHOLDER
+  STAFF_SHA: 215e80d44c0b97a315de635d92d515257efe7b60
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   REVIEWER_BOT_LOGIN: diet-companion-reviewer[bot]
