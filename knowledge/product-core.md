@@ -29,12 +29,15 @@ There are no forbidden products. Any product may be eaten; the only rule is that
 - **Meal**: one of the five daily slots: breakfast, brunch, lunch, afternoon snack, dinner.
 - **Day plan**: the products and dishes planned per meal for one day.
 - **Log entry**: a product or dish actually eaten at a meal, with its amount.
-- **Daily targets**: ranges (minimum to maximum) for calories, protein and fat. A day is on target when each total falls inside its range.
+- **Daily targets**: ranges (minimum to maximum, both inclusive) for calories, protein and fat. A day is on target when each total falls inside its range (R-011, R-012).
+- **Day total**: the sum of a day's log entries for one nutrient, rounded to a whole number; the day plan has its own totals, compared the same way (R-012).
+- **Closed day**: a day the Owner has confirmed as finished. A closed day is past and never changes; a day that isn't closed can still be edited, and a day can't be planned until every earlier day is closed (R-013).
 - **Weekly shopping plan**: the products to buy for the coming week, grouped by shop.
 - **Measurement**: a dated set of body measurements, taken weekly.
 
 ## Not in scope (for now)
-_None stated yet. The kickoff interview confirms it._
+- Catalog: nothing excluded (INT-001#T321/T322).
+- Targets: ranges for nutrients other than calories, protein and fat; a salt range may come later (INT-002#T59/T60).
 
 ## Invariants
 _None confirmed yet._
