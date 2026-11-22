@@ -32,7 +32,7 @@ permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016).
-  STAFF_SHA: 215e80d44c0b97a315de635d92d515257efe7b60
+  STAFF_SHA: 138e7db846551fc209da21edd5c62b9a39a0d058
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   REVIEWER_BOT_LOGIN: diet-companion-reviewer[bot]
@@ -364,9 +364,10 @@ jobs:
           echo "WORK=$RUNNER_TEMP/review" >> "$GITHUB_ENV"
           echo "STAFF_REASON_FILE=$RUNNER_TEMP/review/write-reason" >> "$GITHUB_ENV"
 
-      # The staff-review identity (S-GEN-026): comments and labels on PRs, nothing else. Both go
-      # through the issues API, so issues:write is the whole grant; the App has no pull_requests access.
-      - name: Mint the reviewer App token (issues:write, this repo only)
+      # The staff-review identity (S-GEN-026): comments and labels on PRs and tickets, nothing else.
+      # A comment on a PR needs pull_requests:write even through the issues API (403 with issues:write
+      # alone, run 45031393545); issues:write covers tickets and labels.
+      - name: Mint the reviewer App token (issues and pull_requests write, this repo only)
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -375,6 +376,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+          permission-pull-requests: write
 
       - name: Download the validated output and run record
         continue-on-error: true

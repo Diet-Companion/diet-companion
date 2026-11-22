@@ -50,7 +50,7 @@ The reviewer uses the same `CLAUDE_CODE_OAUTH_TOKEN` secret as the Analyst; see 
 
 1. **Create the GitHub App** `diet-companion-reviewer` in the Diet-Companion org:
    - webhook off;
-   - repository permissions: Issues read and write, Contents read. Comments and labels on PRs go through the issues API, so it needs no Pull requests access;
+   - repository permissions: Pull requests read and write (needed to comment on a PR), Issues read and write, Contents read;
    - install it on this repo only.
 2. **Store its ID and key:**
    ```sh
