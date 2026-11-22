@@ -22,7 +22,7 @@ permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016).
-  STAFF_SHA: STAFF_SHA_PLACEHOLDER
+  STAFF_SHA: 1f287b9f3c98633f56cbbbb4d404d493fc8fb855
   STAFF_REPO: Diet-Companion/staff
   REVIEWER_BOT_LOGIN: diet-companion-reviewer[bot]
   STATUS_CONTEXT: staff/ready-gate
