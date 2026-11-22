@@ -364,8 +364,9 @@ jobs:
           echo "WORK=$RUNNER_TEMP/review" >> "$GITHUB_ENV"
           echo "STAFF_REASON_FILE=$RUNNER_TEMP/review/write-reason" >> "$GITHUB_ENV"
 
-      # The staff-review identity (S-GEN-026): comments and labels on PRs, nothing else.
-      - name: Mint the reviewer App token (this repo only)
+      # The staff-review identity (S-GEN-026): comments and labels on PRs, nothing else. Both go
+      # through the issues API, so issues:write is the whole grant; the App has no pull_requests access.
+      - name: Mint the reviewer App token (issues:write, this repo only)
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -374,7 +375,6 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
-          permission-pull-requests: write
 
       - name: Download the validated output and run record
         continue-on-error: true
