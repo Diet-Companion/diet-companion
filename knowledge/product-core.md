@@ -3,7 +3,7 @@
 > **Human-owned (S-GEN-018).** Written from the operator's vision statement of 2026-11-21. The journeys, glossary and priorities are the operator's words; invariants and details are confirmed later through the Analyst's kickoff questions and the ready gates.
 
 ## Vision
-Replace today's manual routine, a nutrient spreadsheet plus a Claude chat that does the arithmetic and looks up missing labels, with one personal app on the phone. Each day is planned, then logged, then compared against target ranges; each Saturday the week's shopping is planned by shop and the body is measured. Adding a product or a repeat dish should take seconds.
+Replace today's manual routine, a nutrient spreadsheet plus a Claude chat that does the arithmetic and looks up missing labels, with one personal app on the phone. Each day is planned, then logged, then compared against target ranges; each Saturday the week's shopping is planned by shop and the body is measured. Adding a product or saving a repeat dish should typically take under 5 minutes: a typical time, not a hard limit (INT-001#T317/T318, Q-012, Q-015).
 
 There are no forbidden products. Any product may be eaten; the only rule is that each day's totals fit inside the daily target ranges.
 
