@@ -32,7 +32,7 @@ permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016).
-  STAFF_SHA: 138e7db846551fc209da21edd5c62b9a39a0d058
+  STAFF_SHA: 58fcfab1a468529818dc74a7b172722b2d8d6e0a
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   REVIEWER_BOT_LOGIN: diet-companion-reviewer[bot]
@@ -281,6 +281,8 @@ jobs:
             --envelope "$WORK/envelope.json" \
             --schema staff/plugins/staff-review/schemas/review-output.schema.json \
             --input "$WORK/input/input.json" \
+            --strip-prefix "$GITHUB_WORKSPACE/head/=head:" \
+            --strip-prefix "$GITHUB_WORKSPACE/product/=" \
             --max-run-usd "$MAX_RUN_USD" \
             --out "$WORK/out/validated.json" \
             --result "$WORK/validation.json"
