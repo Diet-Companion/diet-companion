@@ -13,9 +13,18 @@ export interface LabelValues {
 
 /**
  * The provider seam: read a label photo into nutrient values.
- * Later tickets implement it; tests pass a fake (AGENTS.md).
+ * Implemented by the Claude provider; tests pass a fake (AGENTS.md).
  * The photo is held in memory for the call only.
  */
 export interface LabelProvider {
   readLabel(photo: Uint8Array, runId?: string): Promise<LabelValues>;
 }
+
+export {
+  DEFAULT_MODEL,
+  LabelProviderError,
+  createAnthropicLabelProvider,
+  type AnthropicLabelProviderOptions,
+  type FetchLike,
+  type LabelProviderErrorCode,
+} from "./anthropic-provider.js";
