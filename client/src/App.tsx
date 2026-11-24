@@ -1,14 +1,20 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
+import { createApi, type ChangeResult, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
 import {
   MANUAL_FIELDS,
   buildManualProduct,
   buildNewProduct,
   clearSignedIn,
+  deleteOutcome,
+  filterProducts,
   initialScreen,
   markSignedIn,
+  restoreOutcome,
+  screenAfterList,
   screenAfterManual,
   screenAfterProduct,
+  type CatalogView,
+  type ChangeOutcome,
   type FieldErrors,
   type KeyValueStorage,
   type ManualErrors,
@@ -196,6 +202,115 @@ function LoginForm(props: { error: string | null; onLogin: (password: string) =>
   );
 }
 
+function productLine(p: Product): string {
+  return [p.shop, p.brand].filter((x) => x !== undefined && x !== "").join(" / ");
+}
+
+function CatalogList(props: {
+  screen: Extract<Screen, { name: "catalog" }>;
+  onFilter: (text: string) => void;
+  onShowView: (view: CatalogView) => void;
+  onOpen: (product: Product) => void;
+  onRestore: (product: Product) => void;
+  onBack: () => void;
+}) {
+  const { screen } = props;
+  const deleted = screen.view === "deleted";
+  const shown = filterProducts(screen.products, screen.filter);
+  return (
+    <section data-testid="catalog">
+      <h2>{deleted ? "Deleted products" : "Catalog"}</h2>
+      {screen.notice ? (
+        <p role="status" data-testid="catalog-notice">
+          {screen.notice}
+        </p>
+      ) : null}
+      <button type="button" data-testid="catalog-back" onClick={props.onBack}>
+        Back
+      </button>
+      <button type="button" data-testid="catalog-toggle" onClick={() => props.onShowView(deleted ? "selectable" : "deleted")}>
+        {deleted ? "Show catalog" : "Show deleted"}
+      </button>
+      <div className="field">
+        <label htmlFor="catalog-filter">Filter by name or shop</label>
+        <input
+          id="catalog-filter"
+          type="search"
+          autoComplete="off"
+          value={screen.filter}
+          onChange={(e) => props.onFilter(e.target.value)}
+          data-testid="catalog-filter"
+        />
+      </div>
+      {shown.length === 0 ? (
+        <p data-testid="catalog-empty">{deleted ? "No deleted products." : "No products found."}</p>
+      ) : (
+        <ul>
+          {shown.map((p) => (
+            <li key={p.id} data-testid="catalog-item">
+              {deleted ? (
+                <strong>{p.name}</strong>
+              ) : (
+                <button type="button" data-testid={`open-${p.id}`} onClick={() => props.onOpen(p)}>
+                  {p.name}
+                </button>
+              )}
+              <p>{productLine(p)}</p>
+              <p>{`${p.calories} kcal per 100 g`}</p>
+              {deleted ? (
+                <button type="button" data-testid={`restore-${p.id}`} onClick={() => props.onRestore(p)}>
+                  Restore
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function ProductPage(props: {
+  screen: Extract<Screen, { name: "product" }>;
+  onBack: () => void;
+  onAskDelete: () => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: (product: Product) => void;
+}) {
+  const p = props.screen.product;
+  return (
+    <section data-testid="product">
+      <h2>{p.name}</h2>
+      <p>{`Name: ${p.name}`}</p>
+      <p>{`Shop: ${p.shop}`}</p>
+      <p>{`Calories: ${p.calories} kcal per 100 g`}</p>
+      <p>{`Protein: ${p.protein} g per 100 g`}</p>
+      <p>{`Fat: ${p.fat} g per 100 g`}</p>
+      {extraLines(p).map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+      {props.screen.confirmDelete ? (
+        <div data-testid="delete-confirm">
+          <p role="alert">Delete this product? It stays in past records and can be restored later.</p>
+          <button type="button" data-testid="confirm-delete" onClick={() => props.onConfirmDelete(p)}>
+            Yes, delete
+          </button>
+          <button type="button" data-testid="cancel-delete" onClick={props.onCancelDelete}>
+            Keep it
+          </button>
+        </div>
+      ) : (
+        <button type="button" data-testid="delete-product" onClick={props.onAskDelete}>
+          Delete
+        </button>
+      )}
+      <button type="button" data-testid="product-back" onClick={props.onBack}>
+        Back to catalog
+      </button>
+    </section>
+  );
+}
+
 export interface ScreenViewProps {
   screen: Screen;
   onLogin: (password: string) => void;
@@ -205,10 +320,19 @@ export interface ScreenViewProps {
   onAddAnother: () => void;
   onAddByHand?: () => void;
   onManualSubmit?: (values: ManualValues) => void;
+  onOpenCatalog?: () => void;
+  onShowView?: (view: CatalogView) => void;
+  onFilter?: (text: string) => void;
+  onOpenProduct?: (product: Product) => void;
+  onAskDelete?: () => void;
+  onCancelDelete?: () => void;
+  onConfirmDelete?: (product: Product) => void;
+  onRestore?: (product: Product) => void;
 }
 
 export function ScreenView(props: ScreenViewProps) {
   const { screen } = props;
+  const none = () => undefined;
   switch (screen.name) {
     case "login":
       return <LoginForm error={screen.error} onLogin={props.onLogin} />;
@@ -233,6 +357,9 @@ export function ScreenView(props: ScreenViewProps) {
           </label>
           <button type="button" className="big-button" data-testid="add-by-hand" onClick={() => props.onAddByHand?.()}>
             Add by hand
+          </button>
+          <button type="button" className="big-button" data-testid="open-catalog" onClick={() => props.onOpenCatalog?.()}>
+            Catalog
           </button>
         </section>
       );
@@ -292,6 +419,27 @@ export function ScreenView(props: ScreenViewProps) {
           </button>
         </section>
       );
+    case "catalog":
+      return (
+        <CatalogList
+          screen={screen}
+          onFilter={props.onFilter ?? none}
+          onShowView={props.onShowView ?? none}
+          onOpen={props.onOpenProduct ?? none}
+          onRestore={props.onRestore ?? none}
+          onBack={props.onAddAnother}
+        />
+      );
+    case "product":
+      return (
+        <ProductPage
+          screen={screen}
+          onBack={props.onOpenCatalog ?? none}
+          onAskDelete={props.onAskDelete ?? none}
+          onCancelDelete={props.onCancelDelete ?? none}
+          onConfirmDelete={props.onConfirmDelete ?? none}
+        />
+      );
   }
 }
 
@@ -340,6 +488,30 @@ export function App(props: AppProps = {}) {
     setScreen(screenAfterManual(result, values));
   }
 
+  async function openCatalog(view: CatalogView = "selectable", notice: string | null = null) {
+    setScreen({ name: "busy" });
+    const result = await api.listProducts(view);
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    setScreen(screenAfterList(result, view, notice));
+  }
+
+  async function change(pending: Promise<ChangeResult>, outcomeOf: (r: ChangeResult) => ChangeOutcome) {
+    const before = screen;
+    setScreen({ name: "busy" });
+    const result = await pending;
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    const outcome = outcomeOf(result);
+    if (outcome.kind === "reload") {
+      await openCatalog(outcome.view, outcome.notice);
+    } else if (outcome.kind === "keep" && before.name === "catalog") {
+      setScreen({ ...before, notice: outcome.notice });
+    } else if (outcome.kind === "screen") {
+      setScreen(outcome.screen);
+    } else {
+      setScreen({ name: "failed", message: outcome.notice });
+    }
+  }
+
   async function login(password: string) {
     const result = await api.loginOwner(password);
     if (result.kind === "ok") {
@@ -368,6 +540,14 @@ export function App(props: AppProps = {}) {
         onAddAnother={() => setScreen({ name: "add" })}
         onAddByHand={() => setScreen({ name: "manual", values: {}, errors: {}, notice: null })}
         onManualSubmit={(values) => void applyManual(values)}
+        onOpenCatalog={() => void openCatalog()}
+        onShowView={(view) => void openCatalog(view)}
+        onFilter={(text) => setScreen((s) => (s.name === "catalog" ? { ...s, filter: text } : s))}
+        onOpenProduct={(product) => setScreen({ name: "product", product, confirmDelete: false })}
+        onAskDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: true } : s))}
+        onCancelDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: false } : s))}
+        onConfirmDelete={(product) => void change(api.deleteProduct(product.id), deleteOutcome)}
+        onRestore={(product) => void change(api.restoreProduct(product.id), restoreOutcome)}
       />
       {signedIn ? (
         <button type="button" className="link-button" onClick={() => void logout()}>

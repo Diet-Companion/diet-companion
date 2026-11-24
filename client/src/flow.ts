@@ -1,14 +1,17 @@
 // Pure flow logic: which screen follows each response, validation, the createProduct body,
-// and the signed-in hint. No browser needed.
+// the catalog helpers, and the signed-in hint. No browser needed.
 
 import {
   OPTIONAL_NUMBER_FIELDS,
   REQUIRED_FIELDS,
+  type ChangeResult,
+  type ListResult,
   type MissingField,
   type NewProduct,
   type OptionalNumberField,
   type Product,
   type ProductResult,
+  type ProductState,
   type Recognised,
 } from "./api";
 
@@ -31,6 +34,8 @@ export type ManualField = (typeof MANUAL_FIELDS)[number];
 export type ManualValues = Partial<Record<ManualField, string>>;
 export type ManualErrors = Partial<Record<ManualField, string>>;
 
+export type CatalogView = ProductState;
+
 export type Screen =
   | { name: "login"; error: string | null }
   | { name: "add" }
@@ -39,7 +44,9 @@ export type Screen =
   | { name: "missing"; missing: MissingField[]; recognised: Recognised }
   | { name: "manual"; values: ManualValues; errors: ManualErrors; notice: string | null }
   | { name: "duplicate"; message: string | null }
-  | { name: "failed"; message: string | null };
+  | { name: "failed"; message: string | null }
+  | { name: "catalog"; view: CatalogView; products: Product[]; filter: string; notice: string | null }
+  | { name: "product"; product: Product; confirmDelete: boolean };
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
@@ -240,5 +247,82 @@ export function screenAfterManual(result: ProductResult, values: ManualValues): 
       return { name: "login", error: null };
     case "failed":
       return keep({}, result.message ?? MANUAL_FAILED_TEXT);
+  }
+}
+
+// ---- Catalog (REQ-005, IF-001@1.2.0) ----
+
+export const LIST_FAILED_TEXT = "The catalog could not be loaded. Try again.";
+export const CHANGE_FAILED_TEXT = "That did not work. Try again.";
+export const CHANGED_MEANWHILE_TEXT = "The product changed meanwhile. The list was reloaded.";
+export const DELETED_TEXT = "Product deleted.";
+export const RESTORED_TEXT = "Product restored.";
+export const RESTORE_DUPLICATE_TEXT = "A product with that name and shop already exists. Nothing was restored.";
+
+function compare(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
+
+// By name, then shop, ignoring letter case, as the server orders it.
+export function sortByName(products: Product[]): Product[] {
+  return [...products].sort((a, b) => compare(a.name, b.name) || compare(a.shop, b.shop));
+}
+
+// A simple text filter on name and shop.
+export function filterProducts(products: Product[], filter: string): Product[] {
+  const q = filter.trim().toLowerCase();
+  if (q === "") return products;
+  return products.filter((p) => p.name.toLowerCase().includes(q) || p.shop.toLowerCase().includes(q));
+}
+
+export function screenAfterList(result: ListResult, view: CatalogView, notice: string | null): Screen {
+  switch (result.kind) {
+    case "ok":
+      return { name: "catalog", view, products: sortByName(result.products), filter: "", notice };
+    case "unauthorized":
+      return { name: "login", error: null };
+    case "failed":
+      return { name: "failed", message: result.message ?? LIST_FAILED_TEXT };
+  }
+}
+
+export type ChangeOutcome =
+  | { kind: "reload"; view: CatalogView; notice: string }
+  | { kind: "keep"; notice: string }
+  | { kind: "screen"; screen: Screen };
+
+// After deleteProduct: back to the selectable list, where the product no longer appears.
+export function deleteOutcome(result: ChangeResult): ChangeOutcome {
+  switch (result.kind) {
+    case "ok":
+      return { kind: "reload", view: "selectable", notice: DELETED_TEXT };
+    case "not_selectable":
+    case "not_found":
+      return { kind: "reload", view: "selectable", notice: CHANGED_MEANWHILE_TEXT };
+    case "unauthorized":
+      return { kind: "screen", screen: { name: "login", error: null } };
+    case "duplicate":
+    case "failed":
+      return {
+        kind: "screen",
+        screen: { name: "failed", message: (result.kind === "failed" ? result.message : null) ?? CHANGE_FAILED_TEXT },
+      };
+  }
+}
+
+// After restoreProduct: a refusal for a duplicate name and shop keeps the list and says why.
+export function restoreOutcome(result: ChangeResult): ChangeOutcome {
+  switch (result.kind) {
+    case "ok":
+      return { kind: "reload", view: "deleted", notice: RESTORED_TEXT };
+    case "duplicate":
+      return { kind: "keep", notice: RESTORE_DUPLICATE_TEXT };
+    case "not_selectable":
+    case "not_found":
+      return { kind: "reload", view: "deleted", notice: CHANGED_MEANWHILE_TEXT };
+    case "unauthorized":
+      return { kind: "screen", screen: { name: "login", error: null } };
+    case "failed":
+      return { kind: "keep", notice: result.message ?? CHANGE_FAILED_TEXT };
   }
 }
