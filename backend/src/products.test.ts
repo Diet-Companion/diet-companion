@@ -214,6 +214,16 @@ describe("addProductFromLabelPhoto", () => {
     expect(res.json().code).toBe("auth.required");
     expect(provider.seen).toHaveLength(0);
   });
+
+  // cites: IF-001@1.1.0#addProductFromLabelPhoto, R-001
+  it("returns sodium 0 and not counted by the piece for a label product with the new fields empty", async () => {
+    const { app } = setup(FULL);
+    const res = await upload(app);
+    expect(res.statusCode).toBe(201);
+    expect(res.json().sodium).toBe(0);
+    expect(res.json().counted_by_piece).toBe(false);
+    expect(res.json()).not.toHaveProperty("salt");
+  });
 });
 
 describe("createProduct", () => {
@@ -238,12 +248,14 @@ describe("createProduct", () => {
     expect(store.list()).toHaveLength(0);
   });
 
-  // cites: R-002
-  it("counts a negative nutrient value as missing", async () => {
-    const { app } = setup(FULL);
+  // cites: IF-001@1.1.0#createProduct
+  it("refuses a negative required value with 400 product.value_invalid", async () => {
+    const { app, store } = setup(FULL);
     const res = await create(app, { ...BODY, protein: -1 });
-    expect(res.statusCode).toBe(422);
-    expect(res.json().missing).toEqual(["protein"]);
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("product.value_invalid");
+    expect(res.json().invalid).toEqual(["protein"]);
+    expect(store.list()).toHaveLength(0);
   });
 
   // cites: R-003
@@ -262,5 +274,202 @@ describe("createProduct", () => {
     expect(res.statusCode).toBe(401);
     expect(res.json().code).toBe("auth.required");
     expect(store.list()).toHaveLength(0);
+  });
+});
+
+describe("createProduct, the fuller product record", () => {
+  const BODY = { name: "Product B", shop: "Shop B", calories: 120, protein: 3, fat: 2, source: "manual" };
+
+  // cites: REQ-002/AC-001
+  it("saves a product with the five required values", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, BODY);
+    expect(res.statusCode).toBe(201);
+    expect(store.list()).toHaveLength(1);
+  });
+
+  // cites: REQ-002/AC-002, R-002
+  it("reports calories missing and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, calories: undefined });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().missing).toEqual(["calories"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: REQ-002/AC-003, R-002
+  it("reports shop missing and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, shop: "" });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().missing).toEqual(["shop"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: REQ-002/AC-014, R-002
+  it("reports name missing and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, name: "" });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().missing).toEqual(["name"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: REQ-002/AC-018, R-002
+  it("reports protein missing and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, protein: undefined });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().missing).toEqual(["protein"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: REQ-002/AC-019, R-002
+  it("reports fat missing and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, fat: undefined });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().missing).toEqual(["fat"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: REQ-002/AC-004
+  it("saves with the optional values empty", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, BODY);
+    expect(res.statusCode).toBe(201);
+    for (const field of ["carbohydrate", "sugars", "fibre", "salt", "brand"]) {
+      expect(res.json()).not.toHaveProperty(field);
+    }
+  });
+
+  // cites: REQ-002/AC-005, R-001
+  it("computes sodium 600 mg from salt 1.5 g", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, { ...BODY, salt: 1.5 });
+    expect(res.json().salt).toBe(1.5);
+    expect(res.json().sodium).toBe(600);
+  });
+
+  // cites: REQ-002/AC-006, R-001
+  it("returns sodium 0 for salt 0 and keeps the stored 0", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, salt: 0 });
+    expect(res.json().sodium).toBe(0);
+    expect(store.list()[0]?.salt).toBe(0);
+  });
+
+  // cites: REQ-002/AC-011, R-001
+  it("returns sodium 0 when salt is empty", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, BODY);
+    expect(res.json().sodium).toBe(0);
+  });
+
+  // cites: REQ-002/AC-008, R-003
+  it("stores the piece weight 50 and counts the product by the piece", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, piece_weight: 50 });
+    expect(res.json().piece_weight).toBe(50);
+    expect(res.json().counted_by_piece).toBe(true);
+    expect(store.list()[0]?.piece_weight).toBe(50);
+  });
+
+  // cites: REQ-002/AC-012, R-003
+  it("saves a product with no piece weight, not counted by the piece", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, BODY);
+    expect(res.statusCode).toBe(201);
+    expect(res.json().counted_by_piece).toBe(false);
+  });
+
+  // cites: REQ-002/AC-009
+  it("stores portion size 10 and portion calories 37.7", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, { ...BODY, portion_size: 10, portion_calories: 37.7 });
+    expect(res.json().portion_size).toBe(10);
+    expect(res.json().portion_calories).toBe(37.7);
+  });
+
+  // cites: IF-001@1.1.0#createProduct
+  it("stores 0 for portion size, portion calories and piece weight as empty", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, portion_size: 0, portion_calories: 0, piece_weight: 0 });
+    expect(res.statusCode).toBe(201);
+    for (const field of ["portion_size", "portion_calories", "piece_weight"]) {
+      expect(res.json()).not.toHaveProperty(field);
+      expect(store.list()[0]).not.toHaveProperty(field);
+    }
+    expect(res.json().counted_by_piece).toBe(false);
+  });
+
+  // cites: IF-001@1.1.0#createProduct
+  it("keeps a real 0 for the nutrient fields", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, { ...BODY, carbohydrate: 0, sugars: 0, fibre: 0 });
+    expect(res.json()).toMatchObject({ carbohydrate: 0, sugars: 0, fibre: 0 });
+  });
+
+  // cites: IF-001@1.1.0#createProduct
+  it("lists every negative field in invalid and saves nothing", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, protein: -1, carbohydrate: -2, salt: -3, piece_weight: -4 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("product.value_invalid");
+    expect(res.json().invalid).toEqual(["protein", "carbohydrate", "salt", "piece_weight"]);
+    expect(store.list()).toHaveLength(0);
+  });
+
+  // cites: IF-001@1.1.0#createProduct, R-002
+  it("checks negatives before R-002", async () => {
+    const { app } = setup(FULL);
+    const res = await create(app, { ...BODY, shop: "", fibre: -1 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().invalid).toEqual(["fibre"]);
+  });
+
+  // cites: IF-001@1.1.0#createProduct, R-003
+  it("checks negatives before R-003", async () => {
+    const { app, store } = setup(FULL);
+    await seedProductA(store);
+    const res = await create(app, { ...BODY, name: "Product A", shop: "Shop A", sugars: -1 });
+    expect(res.statusCode).toBe(400);
+    expect(store.list()).toHaveLength(1);
+  });
+
+  // cites: IF-001@1.1.0#createProduct
+  it("ignores sodium and counted_by_piece sent in the request", async () => {
+    const { app, store } = setup(FULL);
+    const res = await create(app, { ...BODY, sodium: 999, counted_by_piece: true });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().sodium).toBe(0);
+    expect(res.json().counted_by_piece).toBe(false);
+    expect(store.list()[0]).not.toHaveProperty("sodium");
+    expect(store.list()[0]).not.toHaveProperty("counted_by_piece");
+  });
+
+  // cites: REQ-002/AC-015, R-003
+  it("refuses the same name and shop with a different brand", async () => {
+    const { app } = setup(FULL);
+    await create(app, { ...BODY, brand: "Brand A" });
+    const res = await create(app, { ...BODY, brand: "Brand B" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("product.duplicate_name_shop");
+  });
+
+  // cites: REQ-002/AC-016, R-003
+  it("saves the same name in another shop", async () => {
+    const { app } = setup(FULL);
+    await create(app, BODY);
+    const res = await create(app, { ...BODY, shop: "Shop C" });
+    expect(res.statusCode).toBe(201);
+  });
+
+  // cites: REQ-002/AC-017, R-003
+  it("refuses a name and shop that differ only by case and spaces", async () => {
+    const { app } = setup(FULL);
+    await create(app, BODY);
+    const res = await create(app, { ...BODY, name: " product  b ", shop: "shop b" });
+    expect(res.statusCode).toBe(409);
   });
 });

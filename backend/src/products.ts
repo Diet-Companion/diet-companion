@@ -11,6 +11,24 @@ const SOURCES: readonly string[] = ["label", "lookup", "manual"];
 const REQUIRED = ["name", "shop", "calories", "protein", "fat"] as const;
 export type RequiredField = (typeof REQUIRED)[number];
 
+/** Optional numeric values of IF-001@1.1.0, all per 100 g except the portion and piece ones. */
+const OPTIONAL_NUMBERS = [
+  "carbohydrate",
+  "sugars",
+  "fibre",
+  "salt",
+  "portion_size",
+  "portion_calories",
+  "piece_weight",
+] as const;
+export type OptionalNumberField = (typeof OPTIONAL_NUMBERS)[number];
+
+/** Every numeric field createProduct checks for a negative value (IF-001@1.1.0 product.value_invalid). */
+const NUMERIC_FIELDS = ["calories", "protein", "fat", ...OPTIONAL_NUMBERS] as const;
+
+/** For these a 0 means empty and is stored as NULL (IF-001@1.1.0); nutrient fields keep a real 0. */
+const ZERO_IS_EMPTY: readonly string[] = ["portion_size", "portion_calories", "piece_weight"];
+
 /** Values recognised or supplied so far, per 100 g. */
 export interface Recognised {
   name?: string;
@@ -19,6 +37,13 @@ export interface Recognised {
   protein?: number;
   fat?: number;
   brand?: string;
+  carbohydrate?: number;
+  sugars?: number;
+  fibre?: number;
+  salt?: number;
+  portion_size?: number;
+  portion_calories?: number;
+  piece_weight?: number;
 }
 
 export interface NewProduct {
@@ -29,10 +54,34 @@ export interface NewProduct {
   fat: number;
   brand?: string;
   source: ProductSource;
+  carbohydrate?: number;
+  sugars?: number;
+  fibre?: number;
+  salt?: number;
+  portion_size?: number;
+  portion_calories?: number;
+  piece_weight?: number;
 }
 
 export interface Product extends NewProduct {
   id: string;
+}
+
+/** A product as IF-001@1.1.0 returns it: the stored values plus the two derived read-only ones. */
+export interface ProductResponse extends Product {
+  /** mg per 100 g: salt x 400, 0 when salt is empty (R-001). Never stored. */
+  sodium: number;
+  /** True exactly when a piece weight is stored (R-003). Never stored. */
+  counted_by_piece: boolean;
+}
+
+/** Adds the values computed on read (R-001, R-003). */
+export function toProductResponse(product: Product): ProductResponse {
+  return {
+    ...product,
+    sodium: (product.salt ?? 0) * 400,
+    counted_by_piece: product.piece_weight !== undefined,
+  };
 }
 
 export class DuplicateProductError extends Error {}
@@ -108,7 +157,21 @@ function toRecognised(input: Record<string, unknown>): Recognised {
   if (protein !== undefined) out.protein = protein;
   if (fat !== undefined) out.fat = fat;
   if (brand !== undefined) out.brand = brand;
+  for (const key of OPTIONAL_NUMBERS) {
+    const value = cleanNumber(input[key]);
+    if (value === undefined) continue;
+    if (value === 0 && ZERO_IS_EMPTY.includes(key)) continue;
+    out[key] = value;
+  }
   return out;
+}
+
+/** The numeric fields whose supplied value is negative, in IF-001 order (product.value_invalid). */
+function negativeFields(input: Record<string, unknown>): string[] {
+  return NUMERIC_FIELDS.filter((field) => {
+    const value = input[field];
+    return typeof value === "number" && value < 0;
+  });
 }
 
 function missingOf(values: Recognised): RequiredField[] {
@@ -194,8 +257,12 @@ async function validateAndSave(
 
   const product: NewProduct = { name, shop, calories, protein, fat, source };
   if (values.brand !== undefined) product.brand = values.brand;
+  for (const key of OPTIONAL_NUMBERS) {
+    const value = values[key];
+    if (value !== undefined) product[key] = value;
+  }
   try {
-    return reply.code(201).send(await deps.store.add(product));
+    return reply.code(201).send(toProductResponse(await deps.store.add(product)));
   } catch (error) {
     if (error instanceof DuplicateProductError) return duplicate();
     throw error;
@@ -215,7 +282,7 @@ async function readPhoto(request: FastifyRequest): Promise<Uint8Array | undefine
 }
 
 export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDeps): void {
-  // IF-001@1.0.0 addProductFromLabelPhoto
+  // IF-001@1.1.0 addProductFromLabelPhoto
   app.post("/products/label-photo", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
 
@@ -242,7 +309,7 @@ export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDe
     return validateAndSave(deps, request, reply, recognised, "label");
   });
 
-  // IF-001@1.0.0 createProduct
+  // IF-001@1.1.0 createProduct
   app.post("/products", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
 
@@ -250,6 +317,11 @@ export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDe
       typeof request.body === "object" && request.body !== null
         ? (request.body as Record<string, unknown>)
         : {};
+    // A negative value is refused before R-003 and R-002, and nothing is saved.
+    const invalid = negativeFields(body);
+    if (invalid.length > 0) {
+      return sendError(request, reply, 400, "product.value_invalid", "A numeric value is negative.", { invalid });
+    }
     const source = SOURCES.includes(body.source as string) ? (body.source as ProductSource) : undefined;
     return validateAndSave(deps, request, reply, toRecognised(body), source);
   });
