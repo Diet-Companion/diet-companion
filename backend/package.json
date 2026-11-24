@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "pretypecheck": "npm run build --workspace @diet-companion/label-reader",
     "typecheck": "tsc --noEmit",
+    "prebuild": "npm run build --workspace @diet-companion/label-reader",
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@diet-companion/label-reader": "*",
+    "@fastify/multipart": "^9.0.0",
     "fastify": "^5.0.0"
   }
 }
