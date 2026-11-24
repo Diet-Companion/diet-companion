@@ -1,0 +1,84 @@
+# Product CI: build and test every pull request and every push to main (S-DEVOPS-035, stage 1 "PR").
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# Runs on `pull_request`, never `pull_request_target`: the PR's code runs with a read-only token and
+# no secrets, so a fork or an agent branch can't reach anything. The commands are the root scripts
+# AGENTS.md defines, the same ones the Developer's work sandbox runs.
+#   unit         npm ci, typecheck, build, unit tests (no database, no network).
+#   integration  the same build, then `npm run test:integration` against a throwaway PostgreSQL
+#                service. Skipped by npm until the script exists (--if-present).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install (from the lockfile)
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: Upload the JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unit-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/unit.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        # postgres:17-alpine, pinned by digest (S-SEC-009).
+        image: postgres@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-only-throwaway   # a disposable service container, not a secret
+          POSTGRES_DB: diet_companion_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d diet_companion_test"
+          --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      DATABASE_URL: postgres://ci:ci-only-throwaway@localhost:5432/diet_companion_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install (from the lockfile)
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Integration tests (PostgreSQL)
+        run: npm run test:integration --if-present
