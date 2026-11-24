@@ -4,14 +4,21 @@ import type { LabelProvider, LabelValues } from "./index.js";
 declare function fetch(
   url: string,
   init: { method: string; headers: Record<string, string>; body: string; signal?: unknown },
-): Promise<{ status: number; text(): Promise<string> }>;
+): Promise<FetchResponse>;
 declare const AbortSignal: { timeout(ms: number): unknown };
+
+/** The part of a fetch response this package uses. `headers` is optional so a simple fake can omit it. */
+export interface FetchResponse {
+  status: number;
+  text(): Promise<string>;
+  headers?: { get(name: string): string | null };
+}
 
 /** The HTTP seam: the same shape as fetch, so a test passes a fake and never makes a real call. */
 export type FetchLike = (
   url: string,
   init: { method: string; headers: Record<string, string>; body: string; signal?: unknown },
-) => Promise<{ status: number; text(): Promise<string> }>;
+) => Promise<FetchResponse>;
 
 /** Stable error codes for provider failures (CMP-003 structured_errors). */
 export type LabelProviderErrorCode =
@@ -22,12 +29,21 @@ export type LabelProviderErrorCode =
   | "provider.http"
   | "provider.malformed";
 
+/** What a non-2xx provider answer tells us. Never holds the provider's free-text message. */
+export interface ProviderHttpDetail {
+  status: number;
+  errorType?: string;
+  requestId?: string;
+}
+
 export class LabelProviderError extends Error {
   readonly code: LabelProviderErrorCode;
-  constructor(code: LabelProviderErrorCode, message: string) {
+  readonly detail?: ProviderHttpDetail;
+  constructor(code: LabelProviderErrorCode, message: string, detail?: ProviderHttpDetail) {
     super(message);
     this.name = "LabelProviderError";
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -41,7 +57,10 @@ export interface AnthropicLabelProviderOptions {
   /** Default 30000. One attempt only, no retries. */
   timeoutMs?: number;
   fetchFn?: FetchLike;
-  /** Receives the run id and an outcome code only: never the photo, the key or the reply. */
+  /**
+   * Receives the run id, an outcome code and, for an HTTP failure, the status, error type and request id:
+   * never the photo, the key, the request body or the provider's message.
+   */
   log?: (message: string) => void;
 }
 
@@ -115,6 +134,36 @@ const PROMPT =
 
 function malformed(): LabelProviderError {
   return new LabelProviderError("provider.malformed", "The provider reply is not valid label values.");
+}
+
+/** Logged tokens must be short and made of safe characters, so free text can never reach the log. */
+function safeToken(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : undefined;
+}
+
+/** Reads the status, the error type and the request id of a non-2xx answer. Never throws, never keeps the message. */
+async function httpDetail(response: FetchResponse): Promise<ProviderHttpDetail> {
+  const detail: ProviderHttpDetail = { status: response.status };
+  let requestId: string | undefined;
+  try {
+    requestId = safeToken(response.headers?.get("request-id"));
+  } catch {
+    requestId = undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(await response.text());
+    if (typeof parsed === "object" && parsed !== null) {
+      const body = parsed as { error?: unknown; request_id?: unknown };
+      if (typeof body.error === "object" && body.error !== null) {
+        detail.errorType = safeToken((body.error as { type?: unknown }).type);
+      }
+      requestId = safeToken(body.request_id) ?? requestId;
+    }
+  } catch {
+    // A missing, unreadable or non-JSON body still reports the status.
+  }
+  if (requestId !== undefined) detail.requestId = requestId;
+  return detail;
 }
 
 /** Checks the tool input and builds LabelValues. A wrong type or a missing key is a failure. */
@@ -194,7 +243,7 @@ export function createAnthropicLabelProvider(options: AnthropicLabelProviderOpti
         },
       ],
     });
-    let response: { status: number; text(): Promise<string> };
+    let response: FetchResponse;
     try {
       response = await send(`${baseUrl}/v1/messages`, {
         method: "POST",
@@ -211,7 +260,8 @@ export function createAnthropicLabelProvider(options: AnthropicLabelProviderOpti
       throw new LabelProviderError("provider.unreachable", "The provider could not be reached.");
     }
     if (response.status < 200 || response.status >= 300) {
-      throw new LabelProviderError("provider.http", `The provider answered status ${response.status}.`);
+      const detail = await httpDetail(response);
+      throw new LabelProviderError("provider.http", `The provider answered status ${response.status}.`, detail);
     }
     let text: string;
     try {
@@ -232,7 +282,14 @@ export function createAnthropicLabelProvider(options: AnthropicLabelProviderOpti
         return values;
       } catch (error) {
         const code = error instanceof LabelProviderError ? error.code : "provider.unreachable";
-        log(`label.read run_id=${id} outcome=${code}`);
+        let line = `label.read run_id=${id} outcome=${code}`;
+        const detail = error instanceof LabelProviderError ? error.detail : undefined;
+        if (detail) {
+          line += ` status=${detail.status}`;
+          if (detail.errorType) line += ` error_type=${detail.errorType}`;
+          if (detail.requestId) line += ` provider_request_id=${detail.requestId}`;
+        }
+        log(line);
         throw error;
       }
     },

@@ -10,17 +10,26 @@ import {
 // Synthetic image bytes built in code: only the leading signature matters to the provider.
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
 const TEST_KEY = "test-key";
+const SECRET_MESSAGE = "credit balance is too low for this account";
 
 interface Call {
   url: string;
   init: Parameters<FetchLike>[1];
 }
 
-function fakeFetch(replyText: string, status = 200): { fetchFn: FetchLike; calls: Call[] } {
+function fakeFetch(
+  replyText: string,
+  status = 200,
+  headers?: Record<string, string>,
+): { fetchFn: FetchLike; calls: Call[] } {
   const calls: Call[] = [];
   const fetchFn: FetchLike = async (url, init) => {
     calls.push({ url, init });
-    return { status, text: async () => replyText };
+    return {
+      status,
+      text: async () => replyText,
+      headers: headers ? { get: (name: string) => headers[name.toLowerCase()] ?? null } : undefined,
+    };
   };
   return { fetchFn, calls };
 }
@@ -34,6 +43,23 @@ const FULL = { name: "Product A", shop: "Shop A", brand: "Brand A", calories: 12
 async function readWith(input: unknown) {
   const { fetchFn } = fakeFetch(toolReply(input));
   return createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn }).readLabel(PNG);
+}
+
+/** Runs a failing read and returns the log lines and the thrown error. */
+async function failWith(replyText: string, status: number, headers?: Record<string, string>) {
+  const lines: string[] = [];
+  const provider = createAnthropicLabelProvider({
+    apiKey: TEST_KEY,
+    fetchFn: fakeFetch(replyText, status, headers).fetchFn,
+    log: (m) => lines.push(m),
+  });
+  let error: unknown;
+  try {
+    await provider.readLabel(PNG);
+  } catch (e) {
+    error = e;
+  }
+  return { lines, error };
 }
 
 describe("anthropic label provider", () => {
@@ -170,9 +196,52 @@ describe("anthropic label provider", () => {
     await expect(failing.readLabel(PNG, "run-2")).rejects.toBeInstanceOf(LabelProviderError);
     expect(lines).toEqual([
       "label.read run_id=run-1 outcome=ok",
-      "label.read run_id=run-2 outcome=provider.http",
+      "label.read run_id=run-2 outcome=provider.http status=500",
     ]);
     expect(lines.join("")).not.toContain(TEST_KEY);
+  });
+
+  // cites: ADR-005/C-001, ADR-005/C-002, Diet-Companion/diet-companion#64
+  it("logs status, error type and request id of a 400 with a JSON error body, never the message", async () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: { type: "invalid_request_error", message: SECRET_MESSAGE },
+      request_id: "req_test1",
+    });
+    const { lines, error } = await failWith(body, 400);
+    expect(lines).toEqual([
+      "label.read run_id=none outcome=provider.http status=400 error_type=invalid_request_error provider_request_id=req_test1",
+    ]);
+    expect(lines.join("")).not.toContain(SECRET_MESSAGE);
+    expect(lines.join("")).not.toContain(TEST_KEY);
+    expect(error).toMatchObject({
+      code: "provider.http",
+      detail: { status: 400, errorType: "invalid_request_error", requestId: "req_test1" },
+    });
+    expect(String((error as Error).message)).not.toContain(SECRET_MESSAGE);
+  });
+
+  // cites: ADR-005/C-001, ADR-005/C-002, Diet-Companion/diet-companion#64
+  it("logs a 401 with the request id taken from the request-id header", async () => {
+    const body = JSON.stringify({
+      type: "error",
+      error: { type: "authentication_error", message: SECRET_MESSAGE },
+    });
+    const { lines } = await failWith(body, 401, { "request-id": "req_hdr1" });
+    expect(lines).toEqual([
+      "label.read run_id=none outcome=provider.http status=401 error_type=authentication_error provider_request_id=req_hdr1",
+    ]);
+    expect(lines.join("")).not.toContain(SECRET_MESSAGE);
+  });
+
+  // cites: ADR-005/C-001, ADR-005/C-002, Diet-Companion/diet-companion#64
+  it("still logs the status when the error body is not JSON, and drops unsafe values", async () => {
+    const plain = await failWith(`upstream says: ${SECRET_MESSAGE}`, 502);
+    expect(plain.lines).toEqual(["label.read run_id=none outcome=provider.http status=502"]);
+    expect(plain.lines.join("")).not.toContain(SECRET_MESSAGE);
+    const unsafe = JSON.stringify({ error: { type: "bad type with spaces" }, request_id: 7 });
+    const odd = await failWith(unsafe, 429);
+    expect(odd.lines).toEqual(["label.read run_id=none outcome=provider.http status=429"]);
   });
 
   it("encodes base64 with padding and recognises image types", () => {
