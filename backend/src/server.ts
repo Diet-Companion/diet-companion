@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { createAnthropicLabelProvider } from "@diet-companion/label-reader";
 import pg from "pg";
 import { buildApp } from "./app.js";
 import { PostgresSessionStore, PostgresThrottleStore } from "./auth/postgres-auth-store.js";
@@ -17,6 +18,16 @@ async function main(): Promise<void> {
     console.error(`database pool error: ${error.message}`);
   });
 
+  // The Claude provider (ADR-005) is used only when the key is set; the key is never logged.
+  const providerKey = process.env.ANTHROPIC_API_KEY?.trim();
+  const labelProvider = providerKey
+    ? createAnthropicLabelProvider({
+        apiKey: providerKey,
+        model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
+        log: (message: string) => console.log(message),
+      })
+    : undefined;
+
   const app = buildApp({
     store: new PostgresProductStore(pool, randomUUID),
     auth: {
@@ -30,7 +41,8 @@ async function main(): Promise<void> {
         return true;
       },
     },
-    // labelProvider stays unset until the Claude provider ticket: label photos answer 502 recognition.unavailable.
+    // Without ANTHROPIC_API_KEY, labelProvider is unset: label photos answer 502 recognition.unavailable.
+    labelProvider,
   });
 
   // The built client sits next to the backend: <root>/backend/dist/server.js and <root>/client/dist.
