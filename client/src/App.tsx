@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { createApi, type ChangeResult, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
+import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
+import { NO_CHANGES_TEXT, buildPatch, editOutcome, productToValues } from "./edit";
 import {
   MANUAL_FIELDS,
   buildManualProduct,
@@ -107,6 +108,8 @@ function ManualForm(props: {
   notice: string | null;
   onSubmit: (values: ManualValues) => void;
   onCancel: () => void;
+  testId?: string;
+  submitLabel?: string;
 }) {
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -119,7 +122,7 @@ function ManualForm(props: {
     props.onSubmit(values);
   }
   return (
-    <form onSubmit={submit} noValidate data-testid="manual-form">
+    <form onSubmit={submit} noValidate data-testid={props.testId ?? "manual-form"}>
       <p>{BASIS_NOTE}</p>
       {props.notice ? (
         <p role="alert" data-testid="manual-notice">
@@ -146,7 +149,7 @@ function ManualForm(props: {
           ) : null}
         </div>
       ))}
-      <button type="submit">Save product</button>
+      <button type="submit">{props.submitLabel ?? "Save product"}</button>
       <button type="button" onClick={props.onCancel}>
         Cancel
       </button>
@@ -273,6 +276,7 @@ function CatalogList(props: {
 function ProductPage(props: {
   screen: Extract<Screen, { name: "product" }>;
   onBack: () => void;
+  onEdit: (product: Product) => void;
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onConfirmDelete: (product: Product) => void;
@@ -281,6 +285,11 @@ function ProductPage(props: {
   return (
     <section data-testid="product">
       <h2>{p.name}</h2>
+      {props.screen.notice ? (
+        <p role="status" data-testid="product-notice">
+          {props.screen.notice}
+        </p>
+      ) : null}
       <p>{`Name: ${p.name}`}</p>
       <p>{`Shop: ${p.shop}`}</p>
       <p>{`Calories: ${p.calories} kcal per 100 g`}</p>
@@ -300,9 +309,14 @@ function ProductPage(props: {
           </button>
         </div>
       ) : (
-        <button type="button" data-testid="delete-product" onClick={props.onAskDelete}>
-          Delete
-        </button>
+        <>
+          <button type="button" data-testid="edit-product" onClick={() => props.onEdit(p)}>
+            Edit
+          </button>
+          <button type="button" data-testid="delete-product" onClick={props.onAskDelete}>
+            Delete
+          </button>
+        </>
       )}
       <button type="button" data-testid="product-back" onClick={props.onBack}>
         Back to catalog
@@ -328,6 +342,9 @@ export interface ScreenViewProps {
   onCancelDelete?: () => void;
   onConfirmDelete?: (product: Product) => void;
   onRestore?: (product: Product) => void;
+  onEdit?: (product: Product) => void;
+  onEditSubmit?: (product: Product, values: ManualValues) => void;
+  onCancelEdit?: (product: Product) => void;
 }
 
 export function ScreenView(props: ScreenViewProps) {
@@ -435,9 +452,22 @@ export function ScreenView(props: ScreenViewProps) {
         <ProductPage
           screen={screen}
           onBack={props.onOpenCatalog ?? none}
+          onEdit={props.onEdit ?? none}
           onAskDelete={props.onAskDelete ?? none}
           onCancelDelete={props.onCancelDelete ?? none}
           onConfirmDelete={props.onConfirmDelete ?? none}
+        />
+      );
+    case "edit":
+      return (
+        <ManualForm
+          values={screen.values}
+          errors={screen.errors}
+          notice={screen.notice}
+          testId="edit-form"
+          submitLabel="Save changes"
+          onSubmit={(values) => props.onEditSubmit?.(screen.product, values)}
+          onCancel={() => props.onCancelEdit?.(screen.product)}
         />
       );
   }
@@ -495,7 +525,7 @@ export function App(props: AppProps = {}) {
     setScreen(screenAfterList(result, view, notice));
   }
 
-  async function change(pending: Promise<ChangeResult>, outcomeOf: (r: ChangeResult) => ChangeOutcome) {
+  async function change<R extends { kind: string }>(pending: Promise<R>, outcomeOf: (r: R) => ChangeOutcome) {
     const before = screen;
     setScreen({ name: "busy" });
     const result = await pending;
@@ -510,6 +540,20 @@ export function App(props: AppProps = {}) {
     } else {
       setScreen({ name: "failed", message: outcome.notice });
     }
+  }
+
+  // Send only the changed fields; with none changed, say so and send nothing.
+  async function applyEdit(original: Product, values: ManualValues) {
+    const built = buildPatch(original, values);
+    if (!built.ok) {
+      setScreen({ name: "edit", product: original, values, errors: built.errors, notice: null });
+      return;
+    }
+    if (Object.keys(built.patch).length === 0) {
+      setScreen({ name: "edit", product: original, values, errors: {}, notice: NO_CHANGES_TEXT });
+      return;
+    }
+    await change(api.editProduct(original.id, built.patch), (r) => editOutcome(r, values, original));
   }
 
   async function login(password: string) {
@@ -548,6 +592,11 @@ export function App(props: AppProps = {}) {
         onCancelDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: false } : s))}
         onConfirmDelete={(product) => void change(api.deleteProduct(product.id), deleteOutcome)}
         onRestore={(product) => void change(api.restoreProduct(product.id), restoreOutcome)}
+        onEdit={(product) =>
+          setScreen({ name: "edit", product, values: productToValues(product), errors: {}, notice: null })
+        }
+        onEditSubmit={(product, values) => void applyEdit(product, values)}
+        onCancelEdit={(product) => setScreen({ name: "product", product, confirmDelete: false })}
       />
       {signedIn ? (
         <button type="button" className="link-button" onClick={() => void logout()}>
