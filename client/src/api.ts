@@ -1,5 +1,5 @@
-// IF-001@1.1.0 client. The fetch function and the run-id source are injected (AGENTS.md).
-// Types follow architecture/system/interfaces/IF-001/openapi.json.
+// IF-001@1.2.0 client. The fetch function and the run-id source are injected (AGENTS.md).
+// Types follow architecture/system/interfaces/IF-001/openapi-1.2.0.json.
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -43,6 +43,10 @@ export interface Product extends NewProduct {
   sodium?: number;
   /** True when a piece weight is stored (R-003). */
   counted_by_piece?: boolean;
+  /** True when soft-deleted (R-006), IF-001@1.2.0. */
+  deleted?: boolean;
+  /** True when it can be chosen for new plans and log entries, IF-001@1.2.0. */
+  selectable?: boolean;
 }
 
 export type ProductResult =
@@ -58,11 +62,31 @@ export type LoginResult =
   | { kind: "rejected"; message: string | null }
   | { kind: "failed"; message: string | null };
 
+/** Which products listProducts returns (IF-001@1.2.0). */
+export type ProductState = "selectable" | "deleted";
+
+export type ListResult =
+  | { kind: "ok"; products: Product[] }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string | null };
+
+/** The answer to deleteProduct or restoreProduct. */
+export type ChangeResult =
+  | { kind: "ok"; product: Product }
+  | { kind: "duplicate"; message: string | null }
+  | { kind: "not_selectable"; message: string | null }
+  | { kind: "not_found" }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string | null };
+
 export interface Api {
   loginOwner(password: string): Promise<LoginResult>;
   logout(): Promise<void>;
   addProductFromLabelPhoto(photo: Blob): Promise<ProductResult>;
   createProduct(product: NewProduct): Promise<ProductResult>;
+  listProducts(state: ProductState): Promise<ListResult>;
+  deleteProduct(id: string): Promise<ChangeResult>;
+  restoreProduct(id: string): Promise<ChangeResult>;
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -143,6 +167,8 @@ function parseProduct(raw: unknown): Product | null {
   const sodium = num(raw.sodium);
   if (sodium !== undefined) product.sodium = sodium;
   if (typeof raw.counted_by_piece === "boolean") product.counted_by_piece = raw.counted_by_piece;
+  if (typeof raw.deleted === "boolean") product.deleted = raw.deleted;
+  if (typeof raw.selectable === "boolean") product.selectable = raw.selectable;
   return product;
 }
 
@@ -167,6 +193,35 @@ async function productResult(res: Response): Promise<ProductResult> {
       missing: parseMissing(b.missing),
       recognised: parseRecognised(b.recognised),
     };
+  }
+  return { kind: "failed", message: messageOf(body) };
+}
+
+async function listResult(res: Response): Promise<ListResult> {
+  if (res.status === 401) return { kind: "unauthorized" };
+  const body = await readBody(res);
+  if (res.status === 200 && Array.isArray(body)) {
+    const products: Product[] = [];
+    for (const raw of body) {
+      const product = parseProduct(raw);
+      if (product) products.push(product);
+    }
+    return { kind: "ok", products };
+  }
+  return { kind: "failed", message: messageOf(body) };
+}
+
+async function changeResult(res: Response): Promise<ChangeResult> {
+  const body = await readBody(res);
+  if (res.status === 200) {
+    const product = parseProduct(body);
+    return product ? { kind: "ok", product } : { kind: "failed", message: null };
+  }
+  if (res.status === 401) return { kind: "unauthorized" };
+  if (res.status === 404) return { kind: "not_found" };
+  if (res.status === 409 && isRecord(body)) {
+    if (body.code === "product.duplicate_name_shop") return { kind: "duplicate", message: messageOf(body) };
+    if (body.code === "product.not_selectable") return { kind: "not_selectable", message: messageOf(body) };
   }
   return { kind: "failed", message: messageOf(body) };
 }
@@ -225,6 +280,37 @@ export function createApi(fetchFn: FetchLike, newRunId: () => string): Api {
           body: JSON.stringify(product),
         });
         return await productResult(res);
+      } catch {
+        return { kind: "failed", message: null };
+      }
+    },
+
+    async listProducts(state) {
+      try {
+        const url = state === "deleted" ? "/products?state=deleted" : "/products";
+        const res = await fetchFn(url, { method: "GET", headers: headers() });
+        return await listResult(res);
+      } catch {
+        return { kind: "failed", message: null };
+      }
+    },
+
+    async deleteProduct(id) {
+      try {
+        const res = await fetchFn(`/products/${encodeURIComponent(id)}`, { method: "DELETE", headers: headers() });
+        return await changeResult(res);
+      } catch {
+        return { kind: "failed", message: null };
+      }
+    },
+
+    async restoreProduct(id) {
+      try {
+        const res = await fetchFn(`/products/${encodeURIComponent(id)}/restore`, {
+          method: "POST",
+          headers: headers(),
+        });
+        return await changeResult(res);
       } catch {
         return { kind: "failed", message: null };
       }
