@@ -22,9 +22,18 @@ type ProductRow = {
   fat: number;
   brand: string | null;
   source: ProductSource;
+  carbohydrate: number | null;
+  sugars: number | null;
+  fibre: number | null;
+  salt: number | null;
+  portion_size_g: number | null;
+  portion_calories: number | null;
+  piece_weight_g: number | null;
 };
 
-const COLUMNS = "id, name, shop, calories, protein, fat, brand, source";
+/** Migration 001 columns, then the optional ones added by migration 003. */
+const COLUMNS =
+  "id, name, shop, calories, protein, fat, brand, source, carbohydrate, sugars, fibre, salt, portion_size_g, portion_calories, piece_weight_g";
 
 function toProduct(row: ProductRow): Product {
   const product: Product = {
@@ -37,6 +46,13 @@ function toProduct(row: ProductRow): Product {
     source: row.source,
   };
   if (row.brand !== null) product.brand = row.brand;
+  if (row.carbohydrate !== null) product.carbohydrate = row.carbohydrate;
+  if (row.sugars !== null) product.sugars = row.sugars;
+  if (row.fibre !== null) product.fibre = row.fibre;
+  if (row.salt !== null) product.salt = row.salt;
+  if (row.portion_size_g !== null) product.portion_size = row.portion_size_g;
+  if (row.portion_calories !== null) product.portion_calories = row.portion_calories;
+  if (row.piece_weight_g !== null) product.piece_weight = row.piece_weight_g;
   return product;
 }
 
@@ -65,7 +81,7 @@ export class PostgresProductStore implements ProductStore {
   async add(product: NewProduct): Promise<Product> {
     try {
       const result = await this.pool.query<ProductRow>(
-        `INSERT INTO products (${COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING ${COLUMNS}`,
+        `INSERT INTO products (${COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING ${COLUMNS}`,
         [
           this.newId(),
           product.name,
@@ -75,6 +91,13 @@ export class PostgresProductStore implements ProductStore {
           product.fat,
           product.brand ?? null,
           product.source,
+          product.carbohydrate ?? null,
+          product.sugars ?? null,
+          product.fibre ?? null,
+          product.salt ?? null,
+          product.portion_size ?? null,
+          product.portion_calories ?? null,
+          product.piece_weight ?? null,
         ],
       );
       const row = result.rows[0];
