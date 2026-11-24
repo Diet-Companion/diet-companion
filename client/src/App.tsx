@@ -1,5 +1,15 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
+import { createDishApi, type DishState } from "./dishApi";
+import { DishScreens } from "./DishViews";
+import {
+  deleteDishOutcome,
+  nextAfterDishList,
+  restoreDishOutcome,
+  type DishNext,
+  type DishOutcome,
+  type DishScreen,
+} from "./dishes";
 import { NO_CHANGES_TEXT, buildPatch, editOutcome, productToValues } from "./edit";
 import {
   MANUAL_FIELDS,
@@ -496,7 +506,13 @@ export function App(props: AppProps = {}) {
     () => createApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
     [props.fetchFn, props.newRunId],
   );
+  const dishApi = useMemo(
+    () => createDishApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
+    [props.fetchFn, props.newRunId],
+  );
   const [screen, setScreen] = useState<Screen>(() => initialScreen(storage));
+  // The dish screens sit on top of the product screens; null means the product screens show.
+  const [dishScreen, setDishScreen] = useState<DishScreen | null>(null);
   const signedIn = screen.name !== "login";
 
   async function apply(pending: ReturnType<typeof api.createProduct>) {
@@ -556,6 +572,40 @@ export function App(props: AppProps = {}) {
     await change(api.editProduct(original.id, built.patch), (r) => editOutcome(r, values, original));
   }
 
+  function applyDishNext(next: DishNext) {
+    if (next.kind === "screen") {
+      setDishScreen(next.screen);
+    } else if (next.kind === "login") {
+      setDishScreen(null);
+      setScreen({ name: "login", error: null });
+    } else {
+      setDishScreen(null);
+      setScreen({ name: "failed", message: next.message });
+    }
+  }
+
+  async function openDishes(view: DishState = "selectable", notice: string | null = null) {
+    setDishScreen({ name: "dishes_busy" });
+    const result = await dishApi.listDishes(view);
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    applyDishNext(nextAfterDishList(result, view, notice));
+  }
+
+  async function changeDish<R extends { kind: string }>(pending: Promise<R>, outcomeOf: (r: R) => DishOutcome) {
+    const before = dishScreen;
+    setDishScreen({ name: "dishes_busy" });
+    const result = await pending;
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    const outcome = outcomeOf(result);
+    if (outcome.kind === "reload") {
+      await openDishes(outcome.view, outcome.notice);
+    } else if (outcome.kind === "keep") {
+      setDishScreen(before && before.name === "dishes" ? { ...before, notice: outcome.notice } : before);
+    } else {
+      applyDishNext(outcome);
+    }
+  }
+
   async function login(password: string) {
     const result = await api.loginOwner(password);
     if (result.kind === "ok") {
@@ -569,35 +619,56 @@ export function App(props: AppProps = {}) {
   async function logout() {
     await api.logout();
     clearSignedIn(storage);
+    setDishScreen(null);
     setScreen({ name: "login", error: null });
   }
 
   return (
     <main>
       <h1 data-testid="app-title">Diet Companion</h1>
-      <ScreenView
-        screen={screen}
-        onLogin={(pw) => void login(pw)}
-        onLogout={() => void logout()}
-        onPhoto={(photo) => void apply(api.addProductFromLabelPhoto(photo))}
-        onCreate={(product) => void apply(api.createProduct(product))}
-        onAddAnother={() => setScreen({ name: "add" })}
-        onAddByHand={() => setScreen({ name: "manual", values: {}, errors: {}, notice: null })}
-        onManualSubmit={(values) => void applyManual(values)}
-        onOpenCatalog={() => void openCatalog()}
-        onShowView={(view) => void openCatalog(view)}
-        onFilter={(text) => setScreen((s) => (s.name === "catalog" ? { ...s, filter: text } : s))}
-        onOpenProduct={(product) => setScreen({ name: "product", product, confirmDelete: false })}
-        onAskDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: true } : s))}
-        onCancelDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: false } : s))}
-        onConfirmDelete={(product) => void change(api.deleteProduct(product.id), deleteOutcome)}
-        onRestore={(product) => void change(api.restoreProduct(product.id), restoreOutcome)}
-        onEdit={(product) =>
-          setScreen({ name: "edit", product, values: productToValues(product), errors: {}, notice: null })
-        }
-        onEditSubmit={(product, values) => void applyEdit(product, values)}
-        onCancelEdit={(product) => setScreen({ name: "product", product, confirmDelete: false })}
-      />
+      {dishScreen ? (
+        <DishScreens
+          screen={dishScreen}
+          onFilter={(text) => setDishScreen((s) => (s && s.name === "dishes" ? { ...s, filter: text } : s))}
+          onShowView={(view) => void openDishes(view)}
+          onOpen={(dish) => setDishScreen({ name: "dish", dish, confirmDelete: false })}
+          onRestore={(dish) => void changeDish(dishApi.restoreDish(dish.id), restoreDishOutcome)}
+          onBack={() => setDishScreen(null)}
+          onBackToList={() => void openDishes()}
+          onAskDelete={() => setDishScreen((s) => (s && s.name === "dish" ? { ...s, confirmDelete: true } : s))}
+          onCancelDelete={() => setDishScreen((s) => (s && s.name === "dish" ? { ...s, confirmDelete: false } : s))}
+          onConfirmDelete={(dish) => void changeDish(dishApi.deleteDish(dish.id), deleteDishOutcome)}
+        />
+      ) : (
+        <ScreenView
+          screen={screen}
+          onLogin={(pw) => void login(pw)}
+          onLogout={() => void logout()}
+          onPhoto={(photo) => void apply(api.addProductFromLabelPhoto(photo))}
+          onCreate={(product) => void apply(api.createProduct(product))}
+          onAddAnother={() => setScreen({ name: "add" })}
+          onAddByHand={() => setScreen({ name: "manual", values: {}, errors: {}, notice: null })}
+          onManualSubmit={(values) => void applyManual(values)}
+          onOpenCatalog={() => void openCatalog()}
+          onShowView={(view) => void openCatalog(view)}
+          onFilter={(text) => setScreen((s) => (s.name === "catalog" ? { ...s, filter: text } : s))}
+          onOpenProduct={(product) => setScreen({ name: "product", product, confirmDelete: false })}
+          onAskDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: true } : s))}
+          onCancelDelete={() => setScreen((s) => (s.name === "product" ? { ...s, confirmDelete: false } : s))}
+          onConfirmDelete={(product) => void change(api.deleteProduct(product.id), deleteOutcome)}
+          onRestore={(product) => void change(api.restoreProduct(product.id), restoreOutcome)}
+          onEdit={(product) =>
+            setScreen({ name: "edit", product, values: productToValues(product), errors: {}, notice: null })
+          }
+          onEditSubmit={(product, values) => void applyEdit(product, values)}
+          onCancelEdit={(product) => setScreen({ name: "product", product, confirmDelete: false })}
+        />
+      )}
+      {!dishScreen && screen.name === "add" ? (
+        <button type="button" className="big-button" data-testid="open-dishes" onClick={() => void openDishes()}>
+          Dishes
+        </button>
+      ) : null}
       {signedIn ? (
         <button type="button" className="link-button" onClick={() => void logout()}>
           Log out
