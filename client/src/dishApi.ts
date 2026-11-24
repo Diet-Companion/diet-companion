@@ -1,4 +1,4 @@
-// IF-001@1.3.0 dish operations (REQ-006): listDishes, deleteDish, restoreDish. Fetch and run id are injected.
+// IF-001@1.3.0 dish operations (REQ-006): listDishes, deleteDish, restoreDish, createDish, editDish. Fetch and run id are injected.
 
 import type { FetchLike } from "./api";
 
@@ -42,10 +42,44 @@ export type DishChangeResult =
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
 
+// One line of a dish to save: a product id and exactly one amount (DishLineInput).
+export interface DishLineInput {
+  product_id: string;
+  grams?: number;
+  pieces?: number;
+}
+
+export interface NewDishInput {
+  name: string;
+  lines: readonly DishLineInput[];
+}
+
+// Only the changed fields. lines, when given, is the full new list (DishUpdate).
+export interface DishUpdate {
+  name?: string;
+  lines?: readonly DishLineInput[];
+}
+
+export interface RefusedLine {
+  index: number;
+  reason: string;
+}
+
+export type DishWriteResult =
+  | { kind: "ok"; dish: Dish; versioned: boolean }
+  | { kind: "line_invalid"; lines: readonly RefusedLine[]; message: string | null }
+  | { kind: "values_missing"; missing: readonly string[]; message: string | null }
+  | { kind: "not_selectable"; message: string | null }
+  | { kind: "not_found" }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string | null };
+
 export interface DishApi {
   listDishes(state: DishState): Promise<DishListResult>;
   deleteDish(id: string): Promise<DishChangeResult>;
   restoreDish(id: string): Promise<DishChangeResult>;
+  createDish(input: NewDishInput): Promise<DishWriteResult>;
+  editDish(id: string, update: DishUpdate): Promise<DishWriteResult>;
 }
 
 type Rec = Record<string, unknown>;
@@ -113,10 +147,31 @@ export function parseDish(raw: unknown): Dish | null {
   };
 }
 
+function refusedLines(raw: unknown): RefusedLine[] {
+  const out: RefusedLine[] = [];
+  if (!Array.isArray(raw)) return out;
+  for (const l of raw) {
+    if (isRec(l) && typeof l.index === "number" && typeof l.reason === "string") {
+      out.push({ index: l.index, reason: l.reason });
+    }
+  }
+  return out;
+}
+
 export function createDishApi(fetchFn: FetchLike, newRunId: () => string): DishApi {
-  async function send(url: string, method: string): Promise<{ status: number; body: unknown } | null> {
+  async function send(
+    url: string,
+    method: string,
+    payload?: unknown,
+  ): Promise<{ status: number; body: unknown } | null> {
     try {
-      const res = await fetchFn(url, { method, headers: { "X-Run-Id": newRunId() } });
+      const headers: Record<string, string> = { "X-Run-Id": newRunId() };
+      const init: RequestInit = { method, headers };
+      if (payload !== undefined) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(payload);
+      }
+      const res = await fetchFn(url, init);
       let body: unknown = null;
       try {
         body = await res.json();
@@ -144,6 +199,32 @@ export function createDishApi(fetchFn: FetchLike, newRunId: () => string): DishA
     return { kind: "failed", message: messageOf(r.body) };
   }
 
+  // createDish answers with a Dish, editDish with {dish, versioned}. A 201 is a new dish in both.
+  async function write(url: string, method: string, payload: unknown): Promise<DishWriteResult> {
+    const r = await send(url, method, payload);
+    if (!r) return { kind: "failed", message: null };
+    const { status, body } = r;
+    const message = messageOf(body);
+    const code = isRec(body) ? body.code : undefined;
+    if (status === 200 || status === 201) {
+      const dish = parseDish(isRec(body) && isRec(body.dish) ? body.dish : body);
+      return dish ? { kind: "ok", dish, versioned: status === 201 } : { kind: "failed", message: null };
+    }
+    if (status === 401) return { kind: "unauthorized" };
+    if (status === 404) return { kind: "not_found" };
+    if (status === 409 && code === "dish.not_selectable") return { kind: "not_selectable", message };
+    if (status === 400 && code === "dish.line_invalid" && isRec(body)) {
+      return { kind: "line_invalid", lines: refusedLines(body.lines), message };
+    }
+    if (status === 422 && code === "dish.values_missing" && isRec(body)) {
+      const missing = Array.isArray(body.missing)
+        ? body.missing.filter((m): m is string => typeof m === "string")
+        : [];
+      return { kind: "values_missing", missing, message };
+    }
+    return { kind: "failed", message };
+  }
+
   return {
     async listDishes(state) {
       const r = await send(state === "deleted" ? "/dishes?state=deleted" : "/dishes", "GET");
@@ -161,5 +242,7 @@ export function createDishApi(fetchFn: FetchLike, newRunId: () => string): DishA
     },
     deleteDish: (id) => change(`/dishes/${encodeURIComponent(id)}`, "DELETE"),
     restoreDish: (id) => change(`/dishes/${encodeURIComponent(id)}/restore`, "POST"),
+    createDish: (input) => write("/dishes", "POST", input),
+    editDish: (id, update) => write(`/dishes/${encodeURIComponent(id)}`, "PATCH", update),
   };
 }
