@@ -8,6 +8,10 @@
 #   unit         npm ci, typecheck, build, unit tests (no database, no network).
 #   integration  the same build, then `npm run test:integration` against a throwaway PostgreSQL
 #                service. Skipped by npm until the script exists (--if-present).
+#
+# A PR that changes no code (requirements, architecture, docs, staff config) still runs `unit` and
+# `integration`, because both are required checks, but they skip their steps and pass in seconds. The
+# `changes` job decides. Any doubt (a push, a failed diff) counts as code, so nothing is skipped by accident.
 name: ci
 
 on:
@@ -23,24 +27,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unit:
+  changes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Does the change touch code?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != "pull_request" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if ! files=$(git diff --name-only "$BASE...$HEAD"); then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          printf '%s\n' "$files"
+          code=false
+          if printf '%s\n' "$files" | grep -qE '^(client/|backend/|label-reader/|package\.json$|package-lock\.json$|tsconfig\.base\.json$|vitest\.config\.ts$|\.github/workflows/ci\.yml$)'; then
+            code=true
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+  unit:
+    needs: changes
+    # Runs even if `changes` fails, so a failure can't turn the required check into a skipped pass.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Change detection must have succeeded
+        if: needs.changes.result != 'success'
+        run: exit 1
+      - name: No code changed
+        if: needs.changes.result == 'success' && needs.changes.outputs.code != 'true'
+        run: echo "This PR changes no code, so the build and unit tests are skipped."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.code == 'true'
         with:
           node-version: "22"
           package-manager-cache: false
       - name: Install (from the lockfile)
+        if: needs.changes.outputs.code == 'true'
         run: npm ci --no-audit --no-fund
       - name: Typecheck
+        if: needs.changes.outputs.code == 'true'
         run: npm run typecheck
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: npm run build
       - name: Unit tests
+        if: needs.changes.outputs.code == 'true'
         run: npm test
       - name: Upload the JUnit report
         if: always()
@@ -52,6 +98,9 @@ jobs:
           if-no-files-found: ignore
 
   integration:
+    needs: changes
+    # Runs even if `changes` fails, so a failure can't turn the required check into a skipped pass.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
@@ -69,16 +118,27 @@ jobs:
     env:
       DATABASE_URL: postgres://ci:ci-only-throwaway@localhost:5432/diet_companion_test
     steps:
+      - name: Change detection must have succeeded
+        if: needs.changes.result != 'success'
+        run: exit 1
+      - name: No code changed
+        if: needs.changes.result == 'success' && needs.changes.outputs.code != 'true'
+        run: echo "This PR changes no code, so the build and integration tests are skipped."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.code == 'true'
         with:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.code == 'true'
         with:
           node-version: "22"
           package-manager-cache: false
       - name: Install (from the lockfile)
+        if: needs.changes.outputs.code == 'true'
         run: npm ci --no-audit --no-fund
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: npm run build
       - name: Integration tests (PostgreSQL)
+        if: needs.changes.outputs.code == 'true'
         run: npm run test:integration --if-present
