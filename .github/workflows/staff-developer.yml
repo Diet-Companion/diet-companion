@@ -18,8 +18,10 @@
 #          (S-DEV-022) and requirement-defect items on the requirement's own ticket (S-DEV-008).
 #
 # Starts when an operator applies `dev:implement`, `dev:fix` or `dev:bootstrap` to an issue, or comments
-# `/developer` on one that has one of them (an answer). Reviews, check failures and the nightly
-# readiness re-run come later (S-DEV-006).
+# `/developer` on one that has one of them (an answer). Fix-up rounds (S-DEV-006): when a draft fails the
+# work sandbox, the write job dispatches this workflow again for the same issue, at most 3 times
+# (FIXUP_ROUNDS). A dispatch is accepted only from this workflow (github-actions[bot]) or an operator.
+# Reviews, check failures and the nightly readiness re-run come later.
 # Never runs on pull requests. Tracker text reaches scripts only through env and files, never
 # through ${{ }} in a script or the prompt string.
 name: staff-developer
@@ -29,13 +31,23 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: The ticket's issue number
+        required: true
+        type: string
+      fixup_round:
+        description: Fix-up round, 1 to 3 (S-DEV-006)
+        required: true
+        type: string
 
 permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 918bec4f288890066425d89e05db9b30c74d1aed
+  STAFF_SHA: fab9849d4d9090f6e8b637f400e01768ce5123ee
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
@@ -43,6 +55,8 @@ env:
   # so this caps the CLI's notional API-price cost, not money spent. It still stops a runaway run.
   MAX_RUN_USD: "6"
   MAX_TURNS: "40"
+  # S-DEV-006 starting value: at most 3 fix-up runs per draft.
+  FIXUP_ROUNDS: "3"
   MODEL: ${{ vars.DEVELOPER_MODEL || 'claude-sonnet-5-5' }}
   RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
@@ -50,16 +64,19 @@ env:
 # group, so they can't displace a queued Developer run.
 concurrency:
   group: >-
-    ${{ ((github.event_name == 'issues' && startsWith(github.event.label.name, 'dev:')) ||
-         (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/developer')))
-        && format('staff-developer-{0}', github.event.issue.number)
+    ${{ (github.event_name == 'workflow_dispatch' && format('staff-developer-{0}', inputs.issue)) ||
+        (((github.event_name == 'issues' && startsWith(github.event.label.name, 'dev:')) ||
+          (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/developer')))
+         && format('staff-developer-{0}', github.event.issue.number))
         || format('staff-developer-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   gate:
     # Cheap filters first: issues only (never PRs), no bots, a dev:* ticket label or a /developer comment.
+    # A dispatch (a fix-up round) is checked in the gate step instead.
     if: >-
+      github.event_name == 'workflow_dispatch' ||
       github.event.issue.pull_request == null &&
       github.event.sender.type != 'Bot' &&
       ((github.event_name == 'issues' && contains(fromJSON('["dev:implement","dev:fix","dev:bootstrap"]'), github.event.label.name)) ||
@@ -73,8 +90,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      issues: read
     outputs:
       allowed: ${{ steps.gate.outputs.allowed }}
+      issue: ${{ steps.gate.outputs.issue }}
+      round: ${{ steps.gate.outputs.round }}
     steps:
       - name: Check out staff governance at the pinned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,9 +113,28 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           COMMENT_BODY: ${{ github.event.comment.body }}
           SENDER: ${{ github.event.sender.login }}
+          EVENT_ISSUE: ${{ github.event.issue.number }}
+          INPUT_ISSUE: ${{ inputs.issue }}
+          INPUT_ROUND: ${{ inputs.fixup_round }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           deny() { echo "::error::Gate denied: $1. Nothing is posted."; exit 1; }
+          issue="$EVENT_ISSUE"; round=0
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            case "$INPUT_ISSUE" in ''|*[!0-9]*) deny "issue is not a number" ;; esac
+            case "$INPUT_ROUND" in [1-9]) ;; *) deny "fixup_round is not 1 to 9" ;; esac
+            [ "$INPUT_ROUND" -le "$FIXUP_ROUNDS" ] || deny "fixup_round is over $FIXUP_ROUNDS (S-DEV-006)"
+            issue="$INPUT_ISSUE"; round="$INPUT_ROUND"
+            # The ticket must be an open issue (never a PR) with one dev:* label.
+            meta=$(gh api "repos/$REPO/issues/$issue" \
+              --jq '[(.pull_request != null), .state, ([.labels[].name | select(startswith("dev:"))] | length)] | @tsv')
+            IFS=$'\t' read -r is_pr state dev_labels <<< "$meta"
+            [ "$is_pr" = false ] || deny "the dispatch names a pull request"
+            [ "$state" = open ] || deny "the ticket is not open"
+            [ "$dev_labels" = 1 ] || deny "the ticket does not have exactly one dev:* label"
+          fi
           if [ "$EVENT_NAME" = issue_comment ]; then
             body="${COMMENT_BODY#"${COMMENT_BODY%%[![:space:]]*}"}"
             body="${body%"${body##*[![:space:]]}"}"
@@ -106,9 +145,15 @@ jobs:
             fi
           fi
           [ "$AGENTS_ENABLED" = "true" ] || deny "AGENTS_ENABLED is not 'true' (S-GEN-069)"
-          python3 staff/harness/contract.py is-operator \
-            --operators staff/governance/operators.yml --login "$SENDER" \
-            || deny "the sender is not in staff governance/operators.yml (S-BA-034)"
+          # A fix-up round dispatched by this workflow's own token runs as github-actions[bot]; only this
+          # workflow's write job holds actions:write in this repo. Anyone else must be an operator.
+          if [ "$EVENT_NAME" != workflow_dispatch ] || [ "$SENDER" != "github-actions[bot]" ]; then
+            python3 staff/harness/contract.py is-operator \
+              --operators staff/governance/operators.yml --login "$SENDER" \
+              || deny "the sender is not in staff governance/operators.yml (S-BA-034)"
+          fi
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "round=$round" >> "$GITHUB_OUTPUT"
           echo "allowed=true" >> "$GITHUB_OUTPUT"
 
   read:
@@ -173,11 +218,21 @@ jobs:
       - name: Build the input file (untrusted data, S-SEC-001)
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           core=false; [ -f product/knowledge/product-core.md ] && core=true
+          event="$GITHUB_EVENT_PATH"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            # A fix-up round has no issue event: rebuild one from the ticket, so it reads like a label run.
+            gh api "repos/$REPO/issues/$ISSUE" | jq --arg repo "$REPO" '{issue: ., repository: {full_name: $repo}}' \
+              > "$WORK/input/event.json"
+            event="$WORK/input/event.json"
+          fi
           python staff/harness/build_input.py \
-            --event "$GITHUB_EVENT_PATH" \
+            --event "$event" \
             --operators staff/governance/operators.yml \
             --areas product/.staff/areas.yml \
             --agent developer --bot-login "$DEVELOPER_BOT_LOGIN" \
@@ -292,7 +347,7 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           TRIGGER_TYPE: ${{ github.event_name == 'issue_comment' && 'comment' || 'label' }}
-          TRIGGER_REF: ${{ github.repository }}#${{ github.event.issue.number }}
+          TRIGGER_REF: ${{ github.repository }}#${{ needs.gate.outputs.issue }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -439,12 +494,14 @@ jobs:
     if: always() && needs.gate.outputs.allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      actions: write   # only to dispatch a fix-up round of this workflow
     env:
       OK: ${{ needs.read.outputs.ok }}
       REASON: ${{ needs.read.outputs.reason }}
       REPO: ${{ github.repository }}
-      ISSUE: ${{ github.event.issue.number }}
+      ISSUE: ${{ needs.gate.outputs.issue }}
+      ROUND: ${{ needs.gate.outputs.round }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
     steps:
       # Only the staff harness, fetched anonymously at the pinned commit. No product checkout.
@@ -545,3 +602,26 @@ jobs:
           retention-days: 90
           overwrite: true
           if-no-files-found: warn
+
+      # S-DEV-006: a draft that fails the work sandbox gets up to FIXUP_ROUNDS automatic fix-up runs. The
+      # next run reads this draft's comment, with the failure, from the ticket.
+      - name: Start a fix-up round when the sandbox failed
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          f="$WORK/sandbox/sandbox.json"
+          [ -s "$f" ] || { echo "No sandbox result, so no fix-up round."; exit 0; }
+          status=$(jq -r '.status' "$f")
+          [ "$status" = fail ] || { echo "Sandbox result: $status. No fix-up round."; exit 0; }
+          case "$ROUND" in ''|*[!0-9]*) echo "::error::bad round"; exit 1 ;; esac
+          next=$((ROUND + 1))
+          if [ "$next" -gt "$FIXUP_ROUNDS" ]; then
+            echo "::warning::The sandbox still fails after $ROUND fix-up rounds. Left for the operator."
+            exit 0
+          fi
+          gh workflow run staff-developer.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+            -f issue="$ISSUE" -f fixup_round="$next"
+          echo "Dispatched fix-up round $next of $FIXUP_ROUNDS for #$ISSUE."
