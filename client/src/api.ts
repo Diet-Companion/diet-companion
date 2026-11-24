@@ -79,6 +79,27 @@ export type ChangeResult =
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
 
+/** The body of editProduct: only the changed fields; an optional field is null to clear it (IF-001@1.2.0). */
+export interface ProductUpdate extends Partial<Record<OptionalNumberField, number | null>> {
+  name?: string;
+  shop?: string;
+  brand?: string | null;
+  calories?: number;
+  protein?: number;
+  fat?: number;
+}
+
+/** The answer to editProduct. versioned is true when a new product was recorded (201). */
+export type EditResult =
+  | { kind: "ok"; product: Product; versioned: boolean }
+  | { kind: "values_missing"; missing: MissingField[] }
+  | { kind: "value_invalid"; invalid: string[]; message: string | null }
+  | { kind: "duplicate"; message: string | null }
+  | { kind: "not_selectable"; message: string | null }
+  | { kind: "not_found" }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string | null };
+
 export interface Api {
   loginOwner(password: string): Promise<LoginResult>;
   logout(): Promise<void>;
@@ -87,6 +108,7 @@ export interface Api {
   listProducts(state: ProductState): Promise<ListResult>;
   deleteProduct(id: string): Promise<ChangeResult>;
   restoreProduct(id: string): Promise<ChangeResult>;
+  editProduct(id: string, patch: ProductUpdate): Promise<EditResult>;
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -226,6 +248,32 @@ async function changeResult(res: Response): Promise<ChangeResult> {
   return { kind: "failed", message: messageOf(body) };
 }
 
+// 201 is a new version, 200 an in-place change (IF-001@1.2.0 editProduct).
+async function editResult(res: Response): Promise<EditResult> {
+  const body = await readBody(res);
+  if (res.status === 200 || res.status === 201) {
+    const product = isRecord(body) ? parseProduct(body.product) : null;
+    return product ? { kind: "ok", product, versioned: res.status === 201 } : { kind: "failed", message: null };
+  }
+  if (res.status === 401) return { kind: "unauthorized" };
+  if (res.status === 404) return { kind: "not_found" };
+  if (res.status === 409 && isRecord(body)) {
+    if (body.code === "product.duplicate_name_shop") return { kind: "duplicate", message: messageOf(body) };
+    if (body.code === "product.not_selectable") return { kind: "not_selectable", message: messageOf(body) };
+  }
+  if (res.status === 400 && isRecord(body) && body.code === "product.value_invalid") {
+    const invalid = Array.isArray(body.invalid)
+      ? body.invalid.filter((x): x is string => typeof x === "string")
+      : [];
+    return { kind: "value_invalid", invalid, message: messageOf(body) };
+  }
+  if (res.status === 422) {
+    const b = isRecord(body) ? body : {};
+    return { kind: "values_missing", missing: parseMissing(b.missing) };
+  }
+  return { kind: "failed", message: messageOf(body) };
+}
+
 export function createApi(fetchFn: FetchLike, newRunId: () => string): Api {
   const headers = (extra: Record<string, string> = {}): Record<string, string> => ({
     "X-Run-Id": newRunId(),
@@ -311,6 +359,19 @@ export function createApi(fetchFn: FetchLike, newRunId: () => string): Api {
           headers: headers(),
         });
         return await changeResult(res);
+      } catch {
+        return { kind: "failed", message: null };
+      }
+    },
+
+    async editProduct(id, patch) {
+      try {
+        const res = await fetchFn(`/products/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          headers: headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify(patch),
+        });
+        return await editResult(res);
       } catch {
         return { kind: "failed", message: null };
       }

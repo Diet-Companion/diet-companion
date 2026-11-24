@@ -46,7 +46,8 @@ export type Screen =
   | { name: "duplicate"; message: string | null }
   | { name: "failed"; message: string | null }
   | { name: "catalog"; view: CatalogView; products: Product[]; filter: string; notice: string | null }
-  | { name: "product"; product: Product; confirmDelete: boolean };
+  | { name: "product"; product: Product; confirmDelete: boolean; notice?: string | null }
+  | { name: "edit"; product: Product; values: ManualValues; errors: ManualErrors; notice: string | null };
 
 export interface KeyValueStorage {
   getItem(key: string): string | null;
