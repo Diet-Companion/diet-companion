@@ -7,7 +7,8 @@
   "scripts": {
     "typecheck": "npm run typecheck --workspaces",
     "build": "npm run build --workspaces",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "INTEGRATION=1 vitest run"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
