@@ -11,6 +11,18 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Only changes that alter the image or its deploy. Pins, docs, requirements and architecture
+    # don't, so they don't ask for an approval. workflow_dispatch redeploys by hand.
+    paths:
+      - client/**
+      - backend/**
+      - label-reader/**
+      - package.json
+      - package-lock.json
+      - tsconfig.base.json
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/deploy.yml
   workflow_dispatch:
 
 permissions:
@@ -83,7 +95,7 @@ jobs:
           set -euo pipefail
           gcloud run deploy diet-companion --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
             --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-secrets DATABASE_URL=database-url:latest,OWNER_PASSWORD_HASH=owner-password-hash:latest \
+            --set-secrets DATABASE_URL=database-url:latest,OWNER_PASSWORD_HASH=owner-password-hash:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest \
             --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi --cpu 1 \
             --quiet
           url=$(gcloud run services describe diet-companion --project "$PROJECT" --region "$REGION" --format='value(status.url)')
