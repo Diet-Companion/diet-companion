@@ -47,7 +47,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 5d7812f7cfcf892f607a339e82a4bb390d6ffb4e
+  STAFF_SHA: 1ed7dc01efd738fc3c1cf3be65e6d8f035dbe6ff
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
@@ -164,6 +164,7 @@ jobs:
     permissions:
       contents: read
       issues: read
+      actions: read   # only to download this ticket's previous draft (validated output) from an earlier run
     outputs:
       ok: ${{ steps.result.outputs.ok }}
       reason: ${{ steps.result.outputs.reason }}
@@ -240,6 +241,27 @@ jobs:
             --product-core knowledge/product-core.md --product-core-exists "$core" \
             --out "$WORK/input/input.json"
           python staff/harness/redact_check.py --in "$WORK/input/input.json" --reason input_redaction
+
+      # A redraft or fix-up round starts from its own previous draft (untrusted data, S-SEC-001): the files of
+      # the run whose patch artifact the agent App's latest draft comment names. The input is redaction-
+      # checked again after. If that run's artifact has expired, the run drafts fresh.
+      - name: Attach the previous draft, if any
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          prev=$(python staff/harness/previous_draft.py find --input "$WORK/input/input.json" --prefix developer)
+          [ -n "$prev" ] || { echo "No previous draft on this ticket."; exit 0; }
+          case "$prev" in *[!0-9-]*) echo "::error::bad run id"; exit 1 ;; esac
+          if gh run download "${prev%-*}" --repo "$REPO" -n "developer-run-$prev" -D "$WORK/prev" \
+              && [ -s "$WORK/prev/validated.json" ]; then
+            python staff/harness/previous_draft.py attach --input "$WORK/input/input.json" \
+              --validated "$WORK/prev/validated.json" --run-id "$prev"
+            python staff/harness/redact_check.py --in "$WORK/input/input.json" --reason input_redaction
+          else
+            echo "The previous draft $prev is not available; drafting fresh."
+          fi
 
       # The fetch step's harness half (S-DEV-042): readiness (S-DEV-007) and the code-map entry (S-DEV-004),
       # from the default branch. dev-meta.json is the harness-made part the later jobs may read.
