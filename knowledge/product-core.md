@@ -23,7 +23,7 @@ There are no forbidden products. Any product may be eaten; the only rule is that
 5. **Measure.** Every Saturday, record body measurements and see the trend over the weeks.
 
 ## Glossary
-- **Product**: a food with its nutrient values (calories, fat, protein and others) and the shop it is bought in.
+- **Product**: a food with its nutrient values (calories, fat, protein and others) and the shop it is bought in. Nutrient values are per 100 g, as labels print them (Diet-Companion/diet-companion#37 comment 7126210508).
 - **Label**: the nutrient panel on a product's package; the source of a product's values.
 - **Dish**: a saved, reusable combination of products with amounts, prepared repeatedly.
 - **Meal**: one of the five daily slots: breakfast, brunch, lunch, afternoon snack, dinner.
@@ -38,6 +38,9 @@ There are no forbidden products. Any product may be eaten; the only rule is that
 ## Not in scope (for now)
 - Catalog: nothing excluded (INT-001#T321/T322).
 - Targets: ranges for nutrients other than calories, protein and fat; a salt range may come later (INT-002#T59/T60).
+
+## Constraints
+- **Running cost**: hosting, database and the label-recognition API together stay under $25 per month (Diet-Companion/diet-companion#37 comment 7126210508).
 
 ## Invariants
 _None confirmed yet._
