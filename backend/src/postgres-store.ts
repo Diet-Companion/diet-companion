@@ -2,9 +2,15 @@ import type pg from "pg";
 import {
   DuplicateProductError,
   NotSelectableError,
+  isSameValues,
+  isSelectable,
+  mergeProduct,
+  touchesNutrients,
+  type EditOutcome,
   type ListState,
   type NewProduct,
   type Product,
+  type ProductChanges,
   type ProductRecord,
   type ProductSource,
   type ProductStore,
@@ -45,6 +51,29 @@ const COLUMNS =
 
 /** The product columns plus the state columns added by migration 004. */
 const RECORD_COLUMNS = `${COLUMNS}, replaced_by, deleted_at`;
+
+const INSERT_SQL = `INSERT INTO products (${COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING ${COLUMNS}`;
+
+/** Parameters of INSERT_SQL. The nutrient columns are written only here (ADR-010/C-002). */
+function insertValues(id: string, product: NewProduct): unknown[] {
+  return [
+    id,
+    product.name,
+    product.shop,
+    product.calories,
+    product.protein,
+    product.fat,
+    product.brand ?? null,
+    product.source,
+    product.carbohydrate ?? null,
+    product.sugars ?? null,
+    product.fibre ?? null,
+    product.salt ?? null,
+    product.portion_size ?? null,
+    product.portion_calories ?? null,
+    product.piece_weight ?? null,
+  ];
+}
 
 function toProduct(row: ProductRow): Product {
   const product: Product = {
@@ -95,26 +124,7 @@ export class PostgresProductStore implements ProductStore {
 
   async add(product: NewProduct): Promise<Product> {
     try {
-      const result = await this.pool.query<ProductRow>(
-        `INSERT INTO products (${COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING ${COLUMNS}`,
-        [
-          this.newId(),
-          product.name,
-          product.shop,
-          product.calories,
-          product.protein,
-          product.fat,
-          product.brand ?? null,
-          product.source,
-          product.carbohydrate ?? null,
-          product.sugars ?? null,
-          product.fibre ?? null,
-          product.salt ?? null,
-          product.portion_size ?? null,
-          product.portion_calories ?? null,
-          product.piece_weight ?? null,
-        ],
-      );
+      const result = await this.pool.query<ProductRow>(INSERT_SQL, insertValues(this.newId(), product));
       const row = result.rows[0];
       if (!row) throw new Error("insert returned no row");
       return toProduct(row);
@@ -158,6 +168,58 @@ export class PostgresProductStore implements ProductStore {
     } catch (error) {
       if (isNameShopViolation(error)) throw new DuplicateProductError("duplicate name and shop");
       throw error;
+    }
+  }
+
+  /**
+   * One transaction (ADR-010/C-004). The row is locked first, so a concurrent edit waits and then finds it
+   * replaced. A nutrient change updates the old row (replaced_by, conditional on selectable) and then inserts
+   * the new row, so the partial unique index never sees the pair as selectable together (AC-013). Any other
+   * change updates the editable columns in place (R-005).
+   */
+  async edit(id: string, changes: ProductChanges): Promise<EditOutcome | undefined> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const found = await client.query<RecordRow>(`SELECT ${RECORD_COLUMNS} FROM products WHERE id = $1 FOR UPDATE`, [id]);
+      const row = found.rows[0];
+      if (!row) {
+        await client.query("ROLLBACK");
+        return undefined;
+      }
+      const record = toRecord(row);
+      if (!isSelectable(record.state)) throw new NotSelectableError("not selectable");
+      const merged = mergeProduct(record.product, changes);
+      if (isSameValues(record.product, merged)) {
+        await client.query("ROLLBACK");
+        return { product: record.product, versioned: false, replaced_id: null };
+      }
+      let outcome: EditOutcome;
+      if (touchesNutrients(record.product, merged)) {
+        const newId = this.newId();
+        const replaced = await client.query(`UPDATE products SET replaced_by = $2 WHERE id = $1 AND ${SELECTABLE_SQL}`, [id, newId]);
+        if (replaced.rowCount !== 1) throw new NotSelectableError("not selectable");
+        const inserted = await client.query<ProductRow>(INSERT_SQL, insertValues(newId, merged));
+        const created = inserted.rows[0];
+        if (!created) throw new Error("insert returned no row");
+        outcome = { product: toProduct(created), versioned: true, replaced_id: id };
+      } else {
+        const updated = await client.query<ProductRow>(
+          `UPDATE products SET name = $2, shop = $3, brand = $4, portion_size_g = $5, portion_calories = $6 WHERE id = $1 AND ${SELECTABLE_SQL} RETURNING ${COLUMNS}`,
+          [id, merged.name, merged.shop, merged.brand ?? null, merged.portion_size ?? null, merged.portion_calories ?? null],
+        );
+        const changed = updated.rows[0];
+        if (!changed) throw new NotSelectableError("not selectable");
+        outcome = { product: toProduct(changed), versioned: false, replaced_id: null };
+      }
+      await client.query("COMMIT");
+      return outcome;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      if (isNameShopViolation(error)) throw new DuplicateProductError("duplicate name and shop");
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
