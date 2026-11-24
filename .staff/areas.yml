@@ -10,5 +10,7 @@ areas:
     paths: [requirements/measurements/**, knowledge/rules/measurements/**, architecture/measurements/**]
   shopping:       # the Saturday plan for the coming week, grouped by shop
     paths: [requirements/shopping/**, knowledge/rules/shopping/**, architecture/shopping/**]
-  system:         # cross-area architecture: the stack, hosting, shared components (S-ARCH-013)
-    paths: [architecture/system/**, architecture/overview.md]
+  system:         # cross-area architecture (S-ARCH-013) and all product code (ADR-009, .staff/code.yml)
+    paths: [architecture/system/**, architecture/overview.md,
+            client/**, backend/**, label-reader/**, package.json, package-lock.json, tsconfig.base.json,
+            vitest.config.ts, vitest.workspace.ts, eslint.config.js, .prettierrc.json, playwright.config.ts]
