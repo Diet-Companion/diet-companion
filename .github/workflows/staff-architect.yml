@@ -31,7 +31,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 459e3cbecc908262fec7c1504d2dc1cff7d5d768
+  STAFF_SHA: 7be401649fc3dd0b4b0f3c0711104794401d25de
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   ARCHITECT_BOT_LOGIN: diet-companion-engineering[bot]
@@ -253,6 +253,7 @@ jobs:
             --envelope "$WORK/envelope.json" \
             --schema staff/plugins/staff-engineering/schemas/architect-output.schema.json \
             --input "$WORK/input/input.json" \
+            --product-dir product \
             --max-run-usd "$MAX_RUN_USD" \
             --out "$WORK/out/validated.json" \
             --result "$WORK/validation.json"
