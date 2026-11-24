@@ -3,18 +3,18 @@
   "info": {
     "title": "catalog-api",
     "version": "1.0.0",
-    "description": "Catalog operations for the Owner. Draft for REQ-003. Draft security scheme is a placeholder until access control is decided (A-002). Nutrient values are assumed per 100 g (A-004)."
+    "description": "Catalog operations and Owner sign-in for the single Owner. Access control is password login with a server-side session per ADR-004 option d. Nutrient values are per 100 g."
   },
   "security": [
     {
-      "ownerKey": []
+      "ownerSession": []
     }
   ],
   "paths": {
     "/products/label-photo": {
       "post": {
         "operationId": "addProductFromLabelPhoto",
-        "summary": "Recognise a label photo and save the product when all required values are known. The photo is never stored.",
+        "summary": "Recognise a label photo and save the product when all required values are known. The photo is never stored by the app.",
         "parameters": [
           {
             "$ref": "#/components/parameters/RunId"
@@ -60,6 +60,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "409": {
             "description": "Error product.duplicate_name_shop. A selectable product has the same name and shop (R-003). Nothing is saved.",
@@ -124,6 +127,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "409": {
             "description": "Error product.duplicate_name_shop (R-003).",
             "content": {
@@ -175,15 +181,81 @@
           }
         }
       }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "loginOwner",
+        "summary": "Sign in with the Owner password. On success a session row is created and the owner_session cookie is set (ADR-004/C-007). Failed attempts are throttled (ADR-004/C-008).",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Signed in. Set-Cookie owner_session (HttpOnly, Secure, SameSite=Strict)."
+          },
+          "401": {
+            "description": "Error auth.failed. The password is wrong. The response is the same whatever the cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error auth.throttled. Too many failed attempts; try again later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "End the Owner session, delete its session row and clear the cookie.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
     }
   },
   "components": {
     "securitySchemes": {
-      "ownerKey": {
+      "ownerSession": {
         "type": "apiKey",
-        "in": "header",
-        "name": "X-Owner-Key",
-        "description": "Placeholder owner credential (A-002)."
+        "in": "cookie",
+        "name": "owner_session",
+        "description": "Opaque session id in an HttpOnly Secure SameSite=Strict cookie, issued by loginOwner after a correct password and checked against a session row with an expiry (ADR-004)."
       }
     },
     "parameters": {
@@ -197,7 +269,33 @@
         "description": "Correlation id echoed in logs and responses."
       }
     },
+    "responses": {
+      "Unauthorized": {
+        "description": "Error auth.required. No valid Owner session.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
     "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true,
+            "description": "The Owner password. Never logged or returned."
+          }
+        }
+      },
       "NewProduct": {
         "type": "object",
         "required": [
@@ -220,17 +318,20 @@
           "calories": {
             "type": "number",
             "minimum": 0,
-            "x-unit": "kcal"
+            "x-unit": "kcal",
+            "description": "Per 100 g."
           },
           "protein": {
             "type": "number",
             "minimum": 0,
-            "x-unit": "g"
+            "x-unit": "g",
+            "description": "Per 100 g."
           },
           "fat": {
             "type": "number",
             "minimum": 0,
-            "x-unit": "g"
+            "x-unit": "g",
+            "description": "Per 100 g."
           },
           "brand": {
             "type": "string"
@@ -307,7 +408,7 @@
               },
               "recognised": {
                 "type": "object",
-                "description": "Values recognised so far; the client resends them with the supplied ones to createProduct.",
+                "description": "Values recognised so far, per 100 g; the client resends them with the supplied ones to createProduct.",
                 "properties": {
                   "name": {
                     "type": "string"
