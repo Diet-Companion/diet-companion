@@ -71,7 +71,8 @@ test("keeps the readiness route ahead of the client fallback", async () => {
 
 // cites: IF-001@1.0.0#getReadiness
 test("never answers an unknown API path with the client", async () => {
-  const res = await app.inject({ method: "GET", url: "/products/unknown" });
+  // Not an IF-001 path: /products/{id} exists since IF-001 1.2.0, but nothing lives below it except /restore.
+  const res = await app.inject({ method: "GET", url: "/products/some-id/unknown" });
   expect(res.statusCode).toBe(404);
   expect(res.body).not.toContain("synthetic-index");
 });

@@ -69,13 +69,13 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   // IF-001@1.0.0 loginOwner and logout.
   if (auth) auth.registerRoutes(app);
 
-  // IF-001@1.0.0 addProductFromLabelPhoto and createProduct.
-  // The photo is read in memory only: one file, size limited, never written anywhere.
+  // IF-001 product operations. The photo is read in memory only: one file, size limited, never written anywhere.
   void app.register(multipart, { limits: { fileSize: MAX_PHOTO_BYTES, files: 1 } });
   registerProductRoutes(app, {
     store: options.store ?? new InMemoryProductStore(randomUUID),
     labelProvider: options.labelProvider,
     isOwner: auth ? (request) => auth.isOwner(request) : options.isOwner,
+    clock: options.clock,
   });
 
   return app;
