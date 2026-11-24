@@ -67,7 +67,7 @@ export interface AnthropicLabelProviderOptions {
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_TIMEOUT_MS = 30000;
-const TOOL_NAME = "record_label";
+const MAX_TOKENS = 1024;
 
 const ALPHABET: string[] = [];
 for (let c = 65; c <= 90; c++) ALPHABET.push(String.fromCharCode(c));
@@ -109,21 +109,22 @@ function fieldSchema(type: string): { type: string[]; description: string } {
   return { type: [type, "null"], description: "null when the label does not show it or it cannot be read" };
 }
 
-const TOOL = {
-  name: TOOL_NAME,
-  description: "Record the values read from a food label photo. Use null for anything not shown or not readable.",
-  input_schema: {
-    type: "object",
-    properties: {
-      name: fieldSchema("string"),
-      shop: fieldSchema("string"),
-      brand: fieldSchema("string"),
-      calories: fieldSchema("number"),
-      protein: fieldSchema("number"),
-      fat: fieldSchema("number"),
-    },
-    required: ["name", "shop", "brand", "calories", "protein", "fat"],
+/**
+ * The structured-output schema. The API rejects minimum, maximum, minLength and maxLength here,
+ * so the >= 0 and non-empty checks stay in checkValues after parsing.
+ */
+const LABEL_SCHEMA = {
+  type: "object",
+  properties: {
+    name: fieldSchema("string"),
+    shop: fieldSchema("string"),
+    brand: fieldSchema("string"),
+    calories: fieldSchema("number"),
+    protein: fieldSchema("number"),
+    fat: fieldSchema("number"),
   },
+  required: ["name", "shop", "brand", "calories", "protein", "fat"],
+  additionalProperties: false,
 };
 
 const PROMPT =
@@ -166,7 +167,7 @@ async function httpDetail(response: FetchResponse): Promise<ProviderHttpDetail> 
   return detail;
 }
 
-/** Checks the tool input and builds LabelValues. A wrong type or a missing key is a failure. */
+/** Checks the parsed reply and builds LabelValues. A wrong type or a missing key is a failure. */
 function checkValues(input: unknown): LabelValues {
   if (typeof input !== "object" || input === null || Array.isArray(input)) throw malformed();
   const record = input as Record<string, unknown>;
@@ -189,19 +190,31 @@ function checkValues(input: unknown): LabelValues {
   return values;
 }
 
-function extractToolInput(text: string): unknown {
+/**
+ * Finds the JSON the model wrote. The reply must have stopped at end_turn (max_tokens may have cut
+ * the JSON off), and the answer is the first text block: a thinking block can come first.
+ */
+function extractLabelJson(text: string): unknown {
   let reply: unknown;
   try {
     reply = JSON.parse(text);
   } catch {
     throw malformed();
   }
-  const content = typeof reply === "object" && reply !== null ? (reply as { content?: unknown }).content : undefined;
-  if (!Array.isArray(content)) throw malformed();
+  if (typeof reply !== "object" || reply === null) throw malformed();
+  const { content, stop_reason: stopReason } = reply as { content?: unknown; stop_reason?: unknown };
+  if (stopReason !== "end_turn" || !Array.isArray(content)) throw malformed();
   for (const block of content) {
     if (typeof block === "object" && block !== null) {
-      const b = block as { type?: unknown; name?: unknown; input?: unknown };
-      if (b.type === "tool_use" && b.name === TOOL_NAME) return b.input;
+      const b = block as { type?: unknown; text?: unknown };
+      if (b.type === "text") {
+        if (typeof b.text !== "string") throw malformed();
+        try {
+          return JSON.parse(b.text);
+        } catch {
+          throw malformed();
+        }
+      }
     }
   }
   throw malformed();
@@ -228,11 +241,13 @@ export function createAnthropicLabelProvider(options: AnthropicLabelProviderOpti
   async function read(photo: Uint8Array): Promise<LabelValues> {
     const mediaType = sniffMediaType(photo);
     if (!mediaType) throw new LabelProviderError("provider.photo_type", "The photo is not a supported image type.");
+    // Structured output, not forced tool use: this model family answers a forced tool_choice with a 400.
+    // No temperature, top_p or top_k, and no thinking type "disabled": all of them are a 400 here.
     const body = JSON.stringify({
       model,
-      max_tokens: 512,
-      tools: [TOOL],
-      tool_choice: { type: "tool", name: TOOL_NAME },
+      max_tokens: MAX_TOKENS,
+      thinking: { type: "between_tools" },
+      output_config: { format: { type: "json_schema", schema: LABEL_SCHEMA } },
       messages: [
         {
           role: "user",
@@ -270,7 +285,7 @@ export function createAnthropicLabelProvider(options: AnthropicLabelProviderOpti
       if (isTimeout(error)) throw new LabelProviderError("provider.timeout", "The provider call timed out.");
       throw new LabelProviderError("provider.unreachable", "The provider reply could not be read.");
     }
-    return checkValues(extractToolInput(text));
+    return checkValues(extractLabelJson(text));
   }
 
   return {

@@ -34,14 +34,18 @@ function fakeFetch(
   return { fetchFn, calls };
 }
 
-function toolReply(input: unknown): string {
-  return JSON.stringify({ content: [{ type: "tool_use", name: "record_label", input }] });
+/** A structured-output reply: one text block holding the JSON, stopped at end_turn. */
+function textReply(input: unknown, stopReason = "end_turn"): string {
+  return JSON.stringify({
+    stop_reason: stopReason,
+    content: [{ type: "text", text: JSON.stringify(input) }],
+  });
 }
 
 const FULL = { name: "Product A", shop: "Shop A", brand: "Brand A", calories: 120, protein: 7.5, fat: 3 };
 
 async function readWith(input: unknown) {
-  const { fetchFn } = fakeFetch(toolReply(input));
+  const { fetchFn } = fakeFetch(textReply(input));
   return createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn }).readLabel(PNG);
 }
 
@@ -60,6 +64,19 @@ async function failWith(replyText: string, status: number, headers?: Record<stri
     error = e;
   }
   return { lines, error };
+}
+
+/** Every key name used anywhere in a JSON value. */
+function allKeys(value: unknown, out: Set<string> = new Set()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const item of value) allKeys(item, out);
+  } else if (typeof value === "object" && value !== null) {
+    for (const [k, v] of Object.entries(value)) {
+      out.add(k);
+      allKeys(v, out);
+    }
+  }
+  return out;
 }
 
 describe("anthropic label provider", () => {
@@ -104,23 +121,56 @@ describe("anthropic label provider", () => {
   });
 
   // cites: REQ-003/AC-010, ADR-005/C-001
-  it("sends one forced tool call with the image, the key header and the default model", async () => {
-    const { fetchFn, calls } = fakeFetch(toolReply(FULL));
+  it("sends one structured-output request with the image, the key header and the default model", async () => {
+    const { fetchFn, calls } = fakeFetch(textReply(FULL));
     await createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn }).readLabel(PNG);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("https://api.anthropic.com/v1/messages");
     expect(calls[0].init.headers["x-api-key"]).toBe(TEST_KEY);
+    expect(calls[0].init.headers["anthropic-version"]).toBe("2023-06-01");
     expect(calls[0].init.signal).toBeDefined();
     const body = JSON.parse(calls[0].init.body);
     expect(body.model).toBe("claude-sonnet-5-5");
-    expect(body.tool_choice).toEqual({ type: "tool", name: "record_label" });
     const image = body.messages[0].content[0];
     expect(image.source.media_type).toBe("image/png");
     expect(image.source.data).toBe("iVBORw0K");
   });
 
+  // cites: REQ-003/AC-010, ADR-005/C-001
+  it("asks for json_schema output and sends no tools, no tool_choice and no sampling parameters", async () => {
+    const { fetchFn, calls } = fakeFetch(textReply(FULL));
+    await createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn }).readLabel(PNG);
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.output_config.format.type).toBe("json_schema");
+    const schema = body.output_config.format.schema;
+    expect(schema.additionalProperties).toBe(false);
+    const keys = allKeys(schema);
+    for (const banned of ["minimum", "maximum", "minLength", "maxLength"]) {
+      expect(keys.has(banned)).toBe(false);
+    }
+    expect(body.thinking).toEqual({ type: "between_tools" });
+    expect(body.max_tokens).toBe(1024);
+    for (const absent of ["tools", "tool_choice", "temperature", "top_p", "top_k"]) {
+      expect(absent in body).toBe(false);
+    }
+  });
+
+  // cites: REQ-003/AC-010
+  it("parses the text block, also when a thinking block comes first", async () => {
+    const reply = JSON.stringify({
+      stop_reason: "end_turn",
+      content: [
+        { type: "thinking", thinking: "reading the label" },
+        { type: "text", text: JSON.stringify(FULL) },
+      ],
+    });
+    const { fetchFn } = fakeFetch(reply);
+    const values = await createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn }).readLabel(PNG);
+    expect(values).toEqual(FULL);
+  });
+
   it("uses the configured model and base URL", async () => {
-    const { fetchFn, calls } = fakeFetch(toolReply(FULL));
+    const { fetchFn, calls } = fakeFetch(textReply(FULL));
     await createAnthropicLabelProvider({
       apiKey: TEST_KEY,
       model: "other-model",
@@ -131,16 +181,20 @@ describe("anthropic label provider", () => {
     expect(JSON.parse(calls[0].init.body).model).toBe("other-model");
   });
 
+  // cites: REQ-003/AC-010
   it("treats a malformed reply as a provider failure", async () => {
     const bad: string[] = [
       "not json",
-      JSON.stringify({ content: [] }),
-      JSON.stringify({ content: [{ type: "text", text: "hello" }] }),
-      toolReply("text"),
-      toolReply({ name: "A" }),
-      toolReply({ ...FULL, calories: "120" }),
-      toolReply({ ...FULL, fat: -1 }),
-      toolReply({ ...FULL, shop: 5 }),
+      JSON.stringify({ stop_reason: "end_turn", content: [] }),
+      JSON.stringify({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "only" }] }),
+      JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: "not json" }] }),
+      textReply(FULL, "max_tokens"),
+      JSON.stringify({ content: [{ type: "text", text: JSON.stringify(FULL) }] }),
+      textReply("text"),
+      textReply({ name: "A" }),
+      textReply({ ...FULL, calories: "120" }),
+      textReply({ ...FULL, fat: -1 }),
+      textReply({ ...FULL, shop: 5 }),
     ];
     for (const text of bad) {
       const { fetchFn } = fakeFetch(text);
@@ -172,7 +226,7 @@ describe("anthropic label provider", () => {
   });
 
   it("refuses a photo that is not a supported image without calling the provider", async () => {
-    const { fetchFn, calls } = fakeFetch(toolReply(FULL));
+    const { fetchFn, calls } = fakeFetch(textReply(FULL));
     const provider = createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn });
     await expect(provider.readLabel(new Uint8Array(16))).rejects.toMatchObject({ code: "provider.photo_type" });
     expect(calls).toHaveLength(0);
@@ -185,7 +239,7 @@ describe("anthropic label provider", () => {
   // cites: ADR-005/C-001, ADR-005/C-002
   it("logs only the run id and the outcome, never the key or the photo", async () => {
     const lines: string[] = [];
-    const { fetchFn } = fakeFetch(toolReply(FULL));
+    const { fetchFn } = fakeFetch(textReply(FULL));
     const ok = createAnthropicLabelProvider({ apiKey: TEST_KEY, fetchFn, log: (m) => lines.push(m) });
     await ok.readLabel(PNG, "run-1");
     const failing = createAnthropicLabelProvider({
