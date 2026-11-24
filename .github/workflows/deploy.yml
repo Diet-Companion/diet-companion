@@ -88,6 +88,21 @@ jobs:
             --command node --args backend/dist/migrate.js \
             --max-retries 0 --task-timeout 300s --execute-now --wait --quiet
 
+      # A real-Claude smoke check before traffic moves (S-DEVOPS-035): this image reads one synthetic label
+      # (label-reader/fixtures/smoke-label.png) with the production key, as a Cloud Run job under the runtime
+      # account, so the key never reaches GitHub. A failure stops the deploy and the running revision stays.
+      # About one cent per deploy.
+      - name: Smoke-check the label reader against the real Claude API
+        env:
+          RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs deploy label-smoke --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
+            --service-account "$RUNTIME_SA" \
+            --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
+            --command node --args label-reader/dist/smoke-cli.js,label-reader/fixtures/smoke-label.png \
+            --max-retries 0 --task-timeout 120s --execute-now --wait --quiet
+
       - name: Deploy the service
         env:
           RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
