@@ -13,4 +13,5 @@ areas:
   system:         # cross-area architecture (S-ARCH-013) and all product code (ADR-009, .staff/code.yml)
     paths: [architecture/system/**, architecture/overview.md,
             client/**, backend/**, label-reader/**, package.json, package-lock.json, tsconfig.base.json,
-            vitest.config.ts, vitest.workspace.ts, eslint.config.js, .prettierrc.json, playwright.config.ts]
+            vitest.config.ts, vitest.workspace.ts, eslint.config.js, .prettierrc.json, playwright.config.ts,
+            Dockerfile, .dockerignore]
