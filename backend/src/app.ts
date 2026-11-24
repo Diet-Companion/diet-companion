@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { randomUUID } from "node:crypto";
+import { createAuth, type AuthDeps } from "./auth/auth.js";
 import {
   InMemoryProductStore,
   MAX_PHOTO_BYTES,
@@ -18,6 +19,11 @@ export interface ReadinessChecks {
 
 export interface AppOptions extends Partial<ProductRouteDeps> {
   checks?: ReadinessChecks;
+  /**
+   * The Owner login (ADR-004 option d). When set, its session check guards the product routes and
+   * it takes precedence over isOwner. With neither, every product request is refused (fail closed).
+   */
+  auth?: AuthDeps;
 }
 
 interface ReadinessBody {
@@ -37,6 +43,7 @@ async function runCheck(check: ReadinessCheck): Promise<boolean> {
 export function buildApp(options: AppOptions = {}): FastifyInstance {
   const app = Fastify();
   const checks = options.checks ?? {};
+  const auth = options.auth ? createAuth(options.auth) : undefined;
 
   // Correlation id echoed on every response (IF-001 RunId, CMP-002 run_id_correlation).
   app.addHook("onRequest", async (request, reply) => {
@@ -59,13 +66,16 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     return reply.code(body.ready ? 200 : 503).send(body);
   });
 
+  // IF-001@1.0.0 loginOwner and logout.
+  if (auth) auth.registerRoutes(app);
+
   // IF-001@1.0.0 addProductFromLabelPhoto and createProduct.
   // The photo is read in memory only: one file, size limited, never written anywhere.
   void app.register(multipart, { limits: { fileSize: MAX_PHOTO_BYTES, files: 1 } });
   registerProductRoutes(app, {
     store: options.store ?? new InMemoryProductStore(randomUUID),
     labelProvider: options.labelProvider,
-    isOwner: options.isOwner,
+    isOwner: auth ? (request) => auth.isOwner(request) : options.isOwner,
   });
 
   return app;
