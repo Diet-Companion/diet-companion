@@ -1,4 +1,4 @@
-// IF-001@1.0.0 client. The fetch function and the run-id source are injected (AGENTS.md).
+// IF-001@1.1.0 client. The fetch function and the run-id source are injected (AGENTS.md).
 // Types follow architecture/system/interfaces/IF-001/openapi.json.
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -6,7 +6,19 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 export const REQUIRED_FIELDS = ["name", "shop", "calories", "protein", "fat"] as const;
 export type MissingField = (typeof REQUIRED_FIELDS)[number];
 
-export interface Recognised {
+export const OPTIONAL_NUMBER_FIELDS = [
+  "carbohydrate",
+  "sugars",
+  "fibre",
+  "salt",
+  "portion_size",
+  "portion_calories",
+  "piece_weight",
+] as const;
+export type OptionalNumberField = (typeof OPTIONAL_NUMBER_FIELDS)[number];
+export type OptionalNumbers = Partial<Record<OptionalNumberField, number>>;
+
+export interface Recognised extends OptionalNumbers {
   name?: string;
   shop?: string;
   calories?: number;
@@ -15,7 +27,7 @@ export interface Recognised {
   brand?: string;
 }
 
-export interface NewProduct {
+export interface NewProduct extends OptionalNumbers {
   name: string;
   shop: string;
   calories: number;
@@ -27,11 +39,16 @@ export interface NewProduct {
 
 export interface Product extends NewProduct {
   id: string;
+  /** mg per 100 g, computed by the server (R-001). */
+  sodium?: number;
+  /** True when a piece weight is stored (R-003). */
+  counted_by_piece?: boolean;
 }
 
 export type ProductResult =
   | { kind: "saved"; product: Product }
   | { kind: "values_missing"; missing: MissingField[]; recognised: Recognised }
+  | { kind: "value_invalid"; invalid: string[]; message: string | null }
   | { kind: "duplicate"; message: string | null }
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
@@ -75,6 +92,13 @@ function str(x: unknown): string | undefined {
   return typeof x === "string" ? x : undefined;
 }
 
+function copyOptionals(raw: Record<string, unknown>, out: OptionalNumbers): void {
+  for (const key of OPTIONAL_NUMBER_FIELDS) {
+    const value = num(raw[key]);
+    if (value !== undefined) out[key] = value;
+  }
+}
+
 function parseRecognised(raw: unknown): Recognised {
   if (!isRecord(raw)) return {};
   const out: Recognised = {};
@@ -90,6 +114,7 @@ function parseRecognised(raw: unknown): Recognised {
   if (calories !== undefined) out.calories = calories;
   if (protein !== undefined) out.protein = protein;
   if (fat !== undefined) out.fat = fat;
+  copyOptionals(raw, out);
   return out;
 }
 
@@ -114,6 +139,10 @@ function parseProduct(raw: unknown): Product | null {
   }
   const product: Product = { id, name, shop, calories, protein, fat, source };
   if (typeof raw.brand === "string") product.brand = raw.brand;
+  copyOptionals(raw, product);
+  const sodium = num(raw.sodium);
+  if (sodium !== undefined) product.sodium = sodium;
+  if (typeof raw.counted_by_piece === "boolean") product.counted_by_piece = raw.counted_by_piece;
   return product;
 }
 
@@ -125,6 +154,12 @@ async function productResult(res: Response): Promise<ProductResult> {
   }
   if (res.status === 401) return { kind: "unauthorized" };
   if (res.status === 409) return { kind: "duplicate", message: messageOf(body) };
+  if (res.status === 400 && isRecord(body) && body.code === "product.value_invalid") {
+    const invalid = Array.isArray(body.invalid)
+      ? body.invalid.filter((x): x is string => typeof x === "string")
+      : [];
+    return { kind: "value_invalid", invalid, message: messageOf(body) };
+  }
   if (res.status === 422) {
     const b = isRecord(body) ? body : {};
     return {

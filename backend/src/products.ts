@@ -69,17 +69,17 @@ export interface Product extends NewProduct {
 
 /** A product as IF-001@1.1.0 returns it: the stored values plus the two derived read-only ones. */
 export interface ProductResponse extends Product {
-  /** mg per 100 g: salt x 400, 0 when salt is empty (R-001). Never stored. */
+  /** mg per 100 g: salt x 400 rounded to 2 decimals, 0 when salt is empty (R-001). Never stored. */
   sodium: number;
   /** True exactly when a piece weight is stored (R-003). Never stored. */
   counted_by_piece: boolean;
 }
 
-/** Adds the values computed on read (R-001, R-003). */
+/** Adds the values computed on read (R-001, R-003). Sodium is rounded to hide float noise (1.15 g gives 460). */
 export function toProductResponse(product: Product): ProductResponse {
   return {
     ...product,
-    sodium: (product.salt ?? 0) * 400,
+    sodium: Math.round((product.salt ?? 0) * 400 * 100) / 100,
     counted_by_piece: product.piece_weight !== undefined,
   };
 }
