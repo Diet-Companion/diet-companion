@@ -1,0 +1,55 @@
+import Fastify, { type FastifyInstance } from "fastify";
+
+export type ReadinessCheck = () => boolean | Promise<boolean>;
+
+/** Dependency checks for GET /readiness. An unset check is not reported. */
+export interface ReadinessChecks {
+  database?: ReadinessCheck;
+  label_reader?: ReadinessCheck;
+}
+
+export interface AppOptions {
+  checks?: ReadinessChecks;
+}
+
+interface ReadinessBody {
+  ready: boolean;
+  database?: boolean;
+  label_reader?: boolean;
+}
+
+async function runCheck(check: ReadinessCheck): Promise<boolean> {
+  try {
+    return await check();
+  } catch {
+    return false;
+  }
+}
+
+export function buildApp(options: AppOptions = {}): FastifyInstance {
+  const app = Fastify();
+  const checks = options.checks ?? {};
+
+  // Correlation id echoed on every response (IF-001 RunId, CMP-002 run_id_correlation).
+  app.addHook("onRequest", async (request, reply) => {
+    const runId = request.headers["x-run-id"];
+    if (typeof runId === "string") {
+      reply.header("X-Run-Id", runId);
+    }
+  });
+
+  // IF-001@1.0.0 getReadiness.
+  app.get("/readiness", async (_request, reply) => {
+    const body: ReadinessBody = { ready: true };
+    if (checks.database) {
+      body.database = await runCheck(checks.database);
+    }
+    if (checks.label_reader) {
+      body.label_reader = await runCheck(checks.label_reader);
+    }
+    body.ready = body.database !== false && body.label_reader !== false;
+    return reply.code(body.ready ? 200 : 503).send(body);
+  });
+
+  return app;
+}
