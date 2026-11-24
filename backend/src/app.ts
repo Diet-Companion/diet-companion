@@ -1,4 +1,12 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import multipart from "@fastify/multipart";
+import { randomUUID } from "node:crypto";
+import {
+  InMemoryProductStore,
+  MAX_PHOTO_BYTES,
+  registerProductRoutes,
+  type ProductRouteDeps,
+} from "./products.js";
 
 export type ReadinessCheck = () => boolean | Promise<boolean>;
 
@@ -8,7 +16,7 @@ export interface ReadinessChecks {
   label_reader?: ReadinessCheck;
 }
 
-export interface AppOptions {
+export interface AppOptions extends Partial<ProductRouteDeps> {
   checks?: ReadinessChecks;
 }
 
@@ -49,6 +57,15 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     }
     body.ready = body.database !== false && body.label_reader !== false;
     return reply.code(body.ready ? 200 : 503).send(body);
+  });
+
+  // IF-001@1.0.0 addProductFromLabelPhoto and createProduct.
+  // The photo is read in memory only: one file, size limited, never written anywhere.
+  void app.register(multipart, { limits: { fileSize: MAX_PHOTO_BYTES, files: 1 } });
+  registerProductRoutes(app, {
+    store: options.store ?? new InMemoryProductStore(randomUUID),
+    labelProvider: options.labelProvider,
+    isOwner: options.isOwner,
   });
 
   return app;
