@@ -2,6 +2,9 @@ import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { randomUUID } from "node:crypto";
 import { createAuth, type AuthDeps } from "./auth/auth.js";
+import type { DishStore } from "./dish-store.js";
+import { registerDishRoutes } from "./dishes.js";
+import { InMemoryDishStore } from "./in-memory-dish-store.js";
 import {
   InMemoryProductStore,
   MAX_PHOTO_BYTES,
@@ -24,6 +27,8 @@ export interface AppOptions extends Partial<ProductRouteDeps> {
    * it takes precedence over isOwner. With neither, every product request is refused (fail closed).
    */
   auth?: AuthDeps;
+  /** The dish storage seam (IF-001@1.3.0 dish routes). Default: an in-memory store. */
+  dishStore?: DishStore;
 }
 
 interface ReadinessBody {
@@ -69,12 +74,20 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   // IF-001@1.0.0 loginOwner and logout.
   if (auth) auth.registerRoutes(app);
 
-  // IF-001 product operations. The photo is read in memory only: one file, size limited, never written anywhere.
+  // IF-001 product and dish operations. The photo is read in memory only: one file, size limited, never written anywhere.
   void app.register(multipart, { limits: { fileSize: MAX_PHOTO_BYTES, files: 1 } });
+  const products = options.store ?? new InMemoryProductStore(randomUUID);
+  const isOwner: ProductRouteDeps["isOwner"] = auth ? (request) => auth.isOwner(request) : options.isOwner;
   registerProductRoutes(app, {
-    store: options.store ?? new InMemoryProductStore(randomUUID),
+    store: products,
     labelProvider: options.labelProvider,
-    isOwner: auth ? (request) => auth.isOwner(request) : options.isOwner,
+    isOwner,
+    clock: options.clock,
+  });
+  registerDishRoutes(app, {
+    dishes: options.dishStore ?? new InMemoryDishStore(randomUUID),
+    products,
+    isOwner,
     clock: options.clock,
   });
 
