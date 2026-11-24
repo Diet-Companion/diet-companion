@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   DishNotSelectableError,
   isDishSelectable,
+  type DishChanges,
   type DishRecord,
   type DishStore,
   type NewDishLine,
@@ -42,6 +43,7 @@ type LineReason = "product_not_found" | "product_not_selectable" | "piece_withou
 
 const LINE_KEYS: readonly string[] = ["product_id", "grams", "pieces"];
 const LIST_STATES: readonly string[] = ["selectable", "deleted"];
+const EDIT_KEYS: readonly string[] = ["name", "lines"];
 
 /**
  * A dish as IF-001@1.3.0 returns it. Each line shows its product by the exact id saved, in its current state
@@ -75,8 +77,15 @@ export async function toDishResponse(products: ProductStore, record: DishRecord)
   };
 }
 
-/** One request line: the line to save, or the reason it is refused (R-007, ADR-014). */
-async function checkLine(products: ProductStore, input: unknown): Promise<NewDishLine | LineReason> {
+/**
+ * One request line: the line to save, or the reason it is refused (R-007, ADR-014). A product id already in the dish
+ * (`carried`) skips only the selectable check (ADR-014 option a).
+ */
+async function checkLine(
+  products: ProductStore,
+  input: unknown,
+  carried: ReadonlySet<string> = new Set(),
+): Promise<NewDishLine | LineReason> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return "amount_invalid";
   const body = input as Record<string, unknown>;
   if (Object.keys(body).some((key) => !LINE_KEYS.includes(key))) return "amount_invalid";
@@ -88,7 +97,7 @@ async function checkLine(products: ProductStore, input: unknown): Promise<NewDis
   }
   const found = typeof body.product_id === "string" ? await products.get(body.product_id) : undefined;
   if (!found) return "product_not_found";
-  if (!isSelectable(found.state)) return "product_not_selectable";
+  if (!isSelectable(found.state) && !carried.has(found.product.id)) return "product_not_selectable";
   if (hasPieces && !((found.product.piece_weight ?? 0) > 0)) return "piece_without_weight";
   return { product_id: found.product.id, grams: hasGrams ? amount : null, pieces: hasPieces ? amount : null };
 }
@@ -121,6 +130,10 @@ async function requireOwner(deps: DishRouteDeps, request: FastifyRequest): Promi
 
 function refuseUnauthorised(request: FastifyRequest, reply: FastifyReply): FastifyReply {
   return sendError(request, reply, 401, "auth.required", "No valid Owner session.");
+}
+
+function refuseNotSelectable(request: FastifyRequest, reply: FastifyReply): FastifyReply {
+  return sendError(request, reply, 409, "dish.not_selectable", "The dish was replaced by a newer version or deleted.");
 }
 
 /** Runs a read or state change on the dish named by :id and maps its outcomes to IF-001@1.3.0. */
@@ -192,6 +205,73 @@ export function registerDishRoutes(app: FastifyInstance, deps: DishRouteDeps): v
   app.get("/dishes/:id", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
     return withDish(deps, request, reply, (id) => deps.dishes.get(id));
+  });
+
+  // IF-001@1.3.0 editDish: R-008, ADR-013 a, ADR-014 a. A lines change records a new dish (201); a name-only change
+  // or no change answers 200. Nothing is saved when a check fails.
+  app.patch("/dishes/:id", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+    const raw = request.body;
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      Array.isArray(raw) ||
+      Object.keys(raw).length === 0 ||
+      Object.keys(raw).some((key) => !EDIT_KEYS.includes(key))
+    ) {
+      return sendError(request, reply, 400, "request.invalid", "The body must set name, lines or both.");
+    }
+    const body = raw as Record<string, unknown>;
+    if (
+      (body.name !== undefined && typeof body.name !== "string") ||
+      (body.lines !== undefined && !Array.isArray(body.lines))
+    ) {
+      return sendError(request, reply, 400, "request.invalid", "name must be a string and lines an array.");
+    }
+
+    const id = (request.params as { id: string }).id;
+    const current = await deps.dishes.get(id);
+    if (!current) return sendError(request, reply, 404, "dish.not_found", "No dish has this id.");
+    if (!isDishSelectable(current.state)) return refuseNotSelectable(request, reply);
+
+    const name = typeof body.name === "string" ? body.name.trim() : undefined;
+    const inputs = Array.isArray(body.lines) ? (body.lines as unknown[]) : undefined;
+    const missing: string[] = [];
+    if (name === "") missing.push("name");
+    if (inputs !== undefined && inputs.length === 0) missing.push("lines");
+    if (missing.length > 0) {
+      return sendError(request, reply, 422, "dish.values_missing", "Required values are missing.", { missing });
+    }
+
+    const changes: DishChanges = {};
+    if (name !== undefined) changes.name = name;
+    if (inputs !== undefined) {
+      const carried = new Set(current.dish.lines.map((line) => line.product_id));
+      const lines: NewDishLine[] = [];
+      const refused: { index: number; reason: LineReason }[] = [];
+      for (const [index, input] of inputs.entries()) {
+        const result = await checkLine(deps.products, input, carried);
+        if (typeof result === "string") refused.push({ index, reason: result });
+        else lines.push(result);
+      }
+      if (refused.length > 0) {
+        return sendError(request, reply, 400, "dish.line_invalid", "One or more lines are refused.", { lines: refused });
+      }
+      changes.lines = lines;
+    }
+
+    try {
+      const outcome = await deps.dishes.edit(id, changes, clock());
+      if (!outcome) return sendError(request, reply, 404, "dish.not_found", "No dish has this id.");
+      return reply.code(outcome.versioned ? 201 : 200).send({
+        dish: await toDishResponse(deps.products, outcome.record),
+        versioned: outcome.versioned,
+        replaced_id: outcome.replaced_id,
+      });
+    } catch (error) {
+      if (error instanceof DishNotSelectableError) return refuseNotSelectable(request, reply);
+      throw error;
+    }
   });
 
   // IF-001@1.3.0 deleteDish: soft delete, deleted_at from the injected clock (R-010).
