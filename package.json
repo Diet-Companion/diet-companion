@@ -5,10 +5,11 @@
   "engines": { "node": ">=22" },
   "workspaces": ["client", "backend", "label-reader"],
   "scripts": {
-    "typecheck": "npm run typecheck --workspaces",
+    "typecheck": "npm run typecheck --workspaces && tsc -p tests/tsconfig.json",
     "build": "npm run build --workspaces",
     "test": "vitest run",
-    "test:integration": "INTEGRATION=1 vitest run"
+    "test:integration": "INTEGRATION=1 vitest run",
+    "test:api": "API=1 vitest run"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
