@@ -67,6 +67,78 @@ export interface Product extends NewProduct {
   id: string;
 }
 
+/**
+ * The nutrient values, defined once (ADR-011/C-002, CMP-002). A change to any of them records a new
+ * product (R-004). name, brand, shop, portion_size and portion_calories are edited in place (R-005).
+ */
+export const NUTRIENT_FIELDS = [
+  "calories",
+  "protein",
+  "fat",
+  "carbohydrate",
+  "sugars",
+  "fibre",
+  "salt",
+  "piece_weight",
+] as const;
+
+/** Values an edit sets (IF-001@1.2.0 ProductUpdate). Omitted keeps the value; null clears an optional value. */
+export interface ProductChanges {
+  name?: string;
+  shop?: string;
+  calories?: number;
+  protein?: number;
+  fat?: number;
+  brand?: string | null;
+  carbohydrate?: number | null;
+  sugars?: number | null;
+  fibre?: number | null;
+  salt?: number | null;
+  portion_size?: number | null;
+  portion_calories?: number | null;
+  piece_weight?: number | null;
+}
+
+/** What editProduct returns (IF-001@1.2.0 EditProductResult). */
+export interface EditOutcome {
+  product: Product;
+  versioned: boolean;
+  replaced_id: string | null;
+}
+
+/** The product with the changes applied. The id and the source are kept. */
+export function mergeProduct(current: Product, changes: ProductChanges): Product {
+  const next: Product = { ...current };
+  if (changes.name !== undefined) next.name = changes.name;
+  if (changes.shop !== undefined) next.shop = changes.shop;
+  if (changes.calories !== undefined) next.calories = changes.calories;
+  if (changes.protein !== undefined) next.protein = changes.protein;
+  if (changes.fat !== undefined) next.fat = changes.fat;
+  if (changes.brand !== undefined) {
+    if (changes.brand === null) delete next.brand;
+    else next.brand = changes.brand;
+  }
+  for (const key of OPTIONAL_NUMBERS) {
+    const value = changes[key];
+    if (value === undefined) continue;
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return next;
+}
+
+const EDITABLE_VALUES = ["name", "shop", "brand", "calories", "protein", "fat", ...OPTIONAL_NUMBERS] as const;
+
+/** True when no editable value differs. */
+export function isSameValues(a: Product, b: Product): boolean {
+  return EDITABLE_VALUES.every((key) => a[key] === b[key]);
+}
+
+/** True when any nutrient value differs (ADR-011/C-002). */
+export function touchesNutrients(a: Product, b: Product): boolean {
+  return NUTRIENT_FIELDS.some((key) => a[key] !== b[key]);
+}
+
 /** Version and soft-delete state of a product row (ADR-010). Selectable when both are null. */
 export interface ProductState {
   replaced_by: string | null;
@@ -141,6 +213,14 @@ export interface ProductStore {
    * NotSelectableError when the product was replaced.
    */
   restore(id: string): Promise<ProductRecord | undefined>;
+  /**
+   * Edits a selectable product (IF-001@1.2.0 editProduct). A nutrient change inserts a new product with the
+   * merged values and sets replaced_by on the old one in one transaction (ADR-010/C-004, R-004); any other
+   * change is applied in place (R-005); no change records nothing. Undefined when the id is unknown.
+   * Throws NotSelectableError when the product is soft-deleted or replaced, DuplicateProductError when the
+   * merged name and shop equal another selectable product (R-003). Nothing is saved on a throw.
+   */
+  edit(id: string, changes: ProductChanges): Promise<EditOutcome | undefined>;
 }
 
 /** R-003: compare ignoring letter case and leading, trailing or repeated spaces. */
@@ -207,6 +287,26 @@ export class InMemoryProductStore implements ProductStore {
       this.states.delete(id);
     }
     return this.get(id);
+  }
+
+  async edit(id: string, changes: ProductChanges): Promise<EditOutcome | undefined> {
+    const index = this.items.findIndex((p) => p.id === id);
+    const current = this.items[index];
+    if (!current) return undefined;
+    if (!isSelectable(this.stateOf(id))) throw new NotSelectableError("not selectable");
+    const merged = mergeProduct(current, changes);
+    if (isSameValues(current, merged)) return { product: current, versioned: false, replaced_id: null };
+    // The product being edited never counts against itself (R-003); its old version is not selectable (AC-013).
+    const clash = await this.findSelectable(merged.name, merged.shop);
+    if (clash && clash.id !== id) throw new DuplicateProductError("duplicate name and shop");
+    if (!touchesNutrients(current, merged)) {
+      this.items[index] = merged;
+      return { product: merged, versioned: false, replaced_id: null };
+    }
+    const created: Product = { ...merged, id: this.newId() };
+    this.items.push(created);
+    this.states.set(id, { replaced_by: created.id, deleted_at: null });
+    return { product: created, versioned: true, replaced_id: id };
   }
 
   /** Test seeding only (CMP-002 seeding_cleanup): sets a state, for example a replaced product. */
@@ -384,6 +484,23 @@ function notFound(request: FastifyRequest, reply: FastifyReply): FastifyReply {
   return sendError(request, reply, 404, "product.not_found", "No product has this id.");
 }
 
+/** Maps a store refusal to its IF-001 409 answer. Undefined when the error is not a refusal. */
+function storeRefusal(request: FastifyRequest, reply: FastifyReply, error: unknown): FastifyReply | undefined {
+  if (error instanceof NotSelectableError) {
+    return sendError(request, reply, 409, "product.not_selectable", "The product was replaced by a newer version.");
+  }
+  if (error instanceof DuplicateProductError) {
+    return sendError(
+      request,
+      reply,
+      409,
+      "product.duplicate_name_shop",
+      "A product with that name and shop already exists.",
+    );
+  }
+  return undefined;
+}
+
 /** Runs a state change on the product named by the :id path parameter and maps its outcomes to IF-001 (R-006). */
 async function changeState(
   request: FastifyRequest,
@@ -395,20 +512,69 @@ async function changeState(
     if (!record) return notFound(request, reply);
     return reply.code(200).send(toProductResponse(record.product, record.state));
   } catch (error) {
-    if (error instanceof NotSelectableError) {
-      return sendError(request, reply, 409, "product.not_selectable", "The product was replaced by a newer version.");
-    }
-    if (error instanceof DuplicateProductError) {
-      return sendError(
-        request,
-        reply,
-        409,
-        "product.duplicate_name_shop",
-        "A product with that name and shop already exists.",
-      );
-    }
+    const refused = storeRefusal(request, reply, error);
+    if (refused) return refused;
     throw error;
   }
+}
+
+/** Read-only values a client may echo back from a read; an edit ignores them (IF-001@1.2.0 Product). */
+const EDIT_IGNORED: readonly string[] = ["sodium", "counted_by_piece", "replaced_by", "deleted", "selectable"];
+const EDIT_FIELDS: readonly string[] = EDITABLE_VALUES;
+const TEXT_FIELDS: readonly string[] = ["name", "shop", "brand"];
+
+type EditRead =
+  | { changes: ProductChanges }
+  | { status: number; code: string; message: string; extra?: Record<string, unknown> };
+
+/** Reads an editProduct body. Order: request.invalid, product.value_invalid, product.values_missing (IF-001@1.2.0). */
+function readEdit(input: unknown): EditRead {
+  const invalid = (message: string): EditRead => ({ status: 400, code: "request.invalid", message });
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return invalid("The body must be a JSON object.");
+  }
+  const body = input as Record<string, unknown>;
+  const keys = Object.keys(body).filter((key) => !EDIT_IGNORED.includes(key));
+  if (keys.length === 0) return invalid("The body names no value to change.");
+  if (keys.some((key) => !EDIT_FIELDS.includes(key))) return invalid("A field in the body cannot be edited.");
+  for (const key of keys) {
+    const value = body[key];
+    if (value === null) continue;
+    if (TEXT_FIELDS.includes(key) ? typeof value !== "string" : typeof value !== "number") {
+      return invalid("A value in the body has the wrong type.");
+    }
+  }
+  const negative = negativeFields(body);
+  if (negative.length > 0) {
+    return {
+      status: 400,
+      code: "product.value_invalid",
+      message: "A numeric value is negative.",
+      extra: { invalid: negative },
+    };
+  }
+  const missing = REQUIRED.filter((key) => {
+    if (!keys.includes(key)) return false;
+    const value = body[key];
+    return value === null || (typeof value === "string" && value.trim() === "");
+  });
+  if (missing.length > 0) {
+    return { status: 422, code: "product.values_missing", message: "Required values are missing.", extra: { missing } };
+  }
+
+  const changes: ProductChanges = {};
+  if (keys.includes("name")) changes.name = (body.name as string).trim();
+  if (keys.includes("shop")) changes.shop = (body.shop as string).trim();
+  if (keys.includes("brand")) changes.brand = cleanText(body.brand) ?? null;
+  if (keys.includes("calories")) changes.calories = body.calories as number;
+  if (keys.includes("protein")) changes.protein = body.protein as number;
+  if (keys.includes("fat")) changes.fat = body.fat as number;
+  for (const key of OPTIONAL_NUMBERS) {
+    if (!keys.includes(key)) continue;
+    const value = body[key] as number | null;
+    changes[key] = value === null || (value === 0 && ZERO_IS_EMPTY.includes(key)) ? null : value;
+  }
+  return { changes };
 }
 
 export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDeps): void {
@@ -474,6 +640,26 @@ export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDe
   app.get("/products/:id", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
     return changeState(request, reply, (id) => deps.store.get(id));
+  });
+
+  // IF-001@1.2.0 editProduct: a nutrient change records a new product (201), any other change is in place (200).
+  app.patch("/products/:id", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+    const read = readEdit(request.body);
+    if ("code" in read) return sendError(request, reply, read.status, read.code, read.message, read.extra);
+    try {
+      const outcome = await deps.store.edit((request.params as { id: string }).id, read.changes);
+      if (!outcome) return notFound(request, reply);
+      return reply.code(outcome.versioned ? 201 : 200).send({
+        product: toProductResponse(outcome.product),
+        versioned: outcome.versioned,
+        replaced_id: outcome.replaced_id,
+      });
+    } catch (error) {
+      const refused = storeRefusal(request, reply, error);
+      if (refused) return refused;
+      throw error;
+    }
   });
 
   // IF-001@1.2.0 deleteProduct: soft delete, deleted_at from the injected clock (R-006).
