@@ -1,13 +1,19 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { createApi, type FetchLike, type MissingField, type NewProduct, type Recognised } from "./api";
+import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
 import {
+  MANUAL_FIELDS,
+  buildManualProduct,
   buildNewProduct,
   clearSignedIn,
   initialScreen,
   markSignedIn,
+  screenAfterManual,
   screenAfterProduct,
   type FieldErrors,
   type KeyValueStorage,
+  type ManualErrors,
+  type ManualField,
+  type ManualValues,
   type Screen,
 } from "./flow";
 
@@ -19,8 +25,27 @@ const LABELS: Record<MissingField, string> = {
   fat: "Fat (g per 100 g)",
 };
 
+const MANUAL_LABELS: Record<ManualField, string> = {
+  name: "Product name (required)",
+  shop: "Shop (required)",
+  brand: "Brand (optional)",
+  calories: "Calories (kcal per 100 g) (required)",
+  protein: "Protein (g per 100 g) (required)",
+  fat: "Fat (g per 100 g) (required)",
+  carbohydrate: "Carbohydrate (g per 100 g) (optional)",
+  sugars: "Sugars (g per 100 g) (optional)",
+  fibre: "Fibre (g per 100 g) (optional)",
+  salt: "Salt (g per 100 g) (optional)",
+  portion_size: "Portion size (g) (optional)",
+  portion_calories: "Portion calories (kcal) (optional)",
+  piece_weight: "Average piece weight (g) (optional)",
+};
+
+const TEXT_FIELDS: readonly ManualField[] = ["name", "shop", "brand"];
+
 export const DUPLICATE_TEXT = "A product with that name and shop already exists. Nothing was saved.";
 export const FAILED_TEXT = "The photo couldn't be read. Try again.";
+export const BASIS_NOTE = "All values are per 100 g. If the label gives values per 100 ml, enter the same numbers.";
 
 function MissingForm(props: {
   missing: MissingField[];
@@ -70,6 +95,83 @@ function MissingForm(props: {
   );
 }
 
+function ManualForm(props: {
+  values: ManualValues;
+  errors: ManualErrors;
+  notice: string | null;
+  onSubmit: (values: ManualValues) => void;
+  onCancel: () => void;
+}) {
+  function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const values: ManualValues = {};
+    for (const f of MANUAL_FIELDS) {
+      const v = data.get(f);
+      values[f] = typeof v === "string" ? v : "";
+    }
+    props.onSubmit(values);
+  }
+  return (
+    <form onSubmit={submit} noValidate data-testid="manual-form">
+      <p>{BASIS_NOTE}</p>
+      {props.notice ? (
+        <p role="alert" data-testid="manual-notice">
+          {props.notice}
+        </p>
+      ) : null}
+      {MANUAL_FIELDS.map((f) => (
+        <div className="field" key={f}>
+          <label htmlFor={`field-${f}`}>{MANUAL_LABELS[f]}</label>
+          <input
+            id={`field-${f}`}
+            name={f}
+            type="text"
+            inputMode={TEXT_FIELDS.includes(f) ? "text" : "decimal"}
+            autoComplete="off"
+            defaultValue={props.values[f] ?? ""}
+            aria-invalid={props.errors[f] ? true : undefined}
+            data-testid={`field-${f}`}
+          />
+          {props.errors[f] ? (
+            <p role="alert" data-testid={`error-${f}`}>
+              {props.errors[f]}
+            </p>
+          ) : null}
+        </div>
+      ))}
+      <button type="submit">Save product</button>
+      <button type="button" onClick={props.onCancel}>
+        Cancel
+      </button>
+    </form>
+  );
+}
+
+const SHOWN_NUMBERS = [
+  ["carbohydrate", "Carbohydrate"],
+  ["sugars", "Sugars"],
+  ["fibre", "Fibre"],
+  ["salt", "Salt"],
+] as const;
+
+/** The lines of a saved product beyond name, shop and the three required values. */
+export function extraLines(p: Product): string[] {
+  const lines: string[] = [];
+  if (p.brand) lines.push(`Brand: ${p.brand}`);
+  for (const [key, label] of SHOWN_NUMBERS) {
+    const v = p[key];
+    if (v !== undefined) lines.push(`${label}: ${v} g per 100 g`);
+  }
+  if (p.sodium !== undefined) lines.push(`Sodium: ${p.sodium} mg per 100 g`);
+  if (p.portion_size !== undefined) lines.push(`Portion size: ${p.portion_size} g`);
+  if (p.portion_calories !== undefined) lines.push(`Portion calories: ${p.portion_calories} kcal`);
+  if (p.counted_by_piece === true && p.piece_weight !== undefined) {
+    lines.push(`Counted by the piece: ${p.piece_weight} g`);
+  }
+  return lines;
+}
+
 function LoginForm(props: { error: string | null; onLogin: (password: string) => void }) {
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -101,6 +203,8 @@ export interface ScreenViewProps {
   onPhoto: (photo: File) => void;
   onCreate: (product: NewProduct) => void;
   onAddAnother: () => void;
+  onAddByHand?: () => void;
+  onManualSubmit?: (values: ManualValues) => void;
 }
 
 export function ScreenView(props: ScreenViewProps) {
@@ -127,6 +231,9 @@ export function ScreenView(props: ScreenViewProps) {
               }}
             />
           </label>
+          <button type="button" className="big-button" data-testid="add-by-hand" onClick={() => props.onAddByHand?.()}>
+            Add by hand
+          </button>
         </section>
       );
     case "busy":
@@ -135,6 +242,7 @@ export function ScreenView(props: ScreenViewProps) {
           Working on it...
         </p>
       );
+
     case "saved": {
       const p = screen.product;
       return (
@@ -145,6 +253,9 @@ export function ScreenView(props: ScreenViewProps) {
           <p>{`Calories: ${p.calories} kcal per 100 g`}</p>
           <p>{`Protein: ${p.protein} g per 100 g`}</p>
           <p>{`Fat: ${p.fat} g per 100 g`}</p>
+          {extraLines(p).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
           <button type="button" onClick={props.onAddAnother}>
             Add another
           </button>
@@ -153,6 +264,16 @@ export function ScreenView(props: ScreenViewProps) {
     }
     case "missing":
       return <MissingForm missing={screen.missing} recognised={screen.recognised} onCreate={props.onCreate} />;
+    case "manual":
+      return (
+        <ManualForm
+          values={screen.values}
+          errors={screen.errors}
+          notice={screen.notice}
+          onSubmit={(values) => props.onManualSubmit?.(values)}
+          onCancel={props.onAddAnother}
+        />
+      );
     case "duplicate":
       return (
         <section data-testid="duplicate">
@@ -207,6 +328,18 @@ export function App(props: AppProps = {}) {
     setScreen(screenAfterProduct(result));
   }
 
+  async function applyManual(values: ManualValues) {
+    const built = buildManualProduct(values);
+    if (!built.ok) {
+      setScreen({ name: "manual", values, errors: built.errors, notice: null });
+      return;
+    }
+    setScreen({ name: "busy" });
+    const result = await api.createProduct(built.product);
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    setScreen(screenAfterManual(result, values));
+  }
+
   async function login(password: string) {
     const result = await api.loginOwner(password);
     if (result.kind === "ok") {
@@ -233,6 +366,8 @@ export function App(props: AppProps = {}) {
         onPhoto={(photo) => void apply(api.addProductFromLabelPhoto(photo))}
         onCreate={(product) => void apply(api.createProduct(product))}
         onAddAnother={() => setScreen({ name: "add" })}
+        onAddByHand={() => setScreen({ name: "manual", values: {}, errors: {}, notice: null })}
+        onManualSubmit={(values) => void applyManual(values)}
       />
       {signedIn ? (
         <button type="button" className="link-button" onClick={() => void logout()}>
