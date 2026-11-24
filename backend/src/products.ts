@@ -67,24 +67,58 @@ export interface Product extends NewProduct {
   id: string;
 }
 
-/** A product as IF-001@1.1.0 returns it: the stored values plus the two derived read-only ones. */
+/** Version and soft-delete state of a product row (ADR-010). Selectable when both are null. */
+export interface ProductState {
+  replaced_by: string | null;
+  deleted_at: Date | null;
+}
+
+/** A product with its state: what getProduct and listProducts read (ADR-010/C-003). */
+export interface ProductRecord {
+  product: Product;
+  state: ProductState;
+}
+
+const SELECTABLE_STATE: ProductState = { replaced_by: null, deleted_at: null };
+
+/** The one predicate that decides selectable (ADR-010/C-003): neither replaced nor soft-deleted (R-004, R-006). */
+export function isSelectable(state: ProductState): boolean {
+  return state.replaced_by === null && state.deleted_at === null;
+}
+
+/** A product as IF-001@1.2.0 returns it: the stored values plus the derived read-only ones. */
 export interface ProductResponse extends Product {
   /** mg per 100 g: salt x 400 rounded to 2 decimals, 0 when salt is empty (R-001). Never stored. */
   sodium: number;
   /** True exactly when a piece weight is stored (R-003). Never stored. */
   counted_by_piece: boolean;
+  /** Id of the newer version that replaced this product, or null (R-004). */
+  replaced_by: string | null;
+  /** True when the product is soft-deleted (R-006). */
+  deleted: boolean;
+  /** True when neither replaced nor soft-deleted. Derived, never stored. */
+  selectable: boolean;
 }
 
 /** Adds the values computed on read (R-001, R-003). Sodium is rounded to hide float noise (1.15 g gives 460). */
-export function toProductResponse(product: Product): ProductResponse {
+export function toProductResponse(product: Product, state: ProductState = SELECTABLE_STATE): ProductResponse {
   return {
     ...product,
     sodium: Math.round((product.salt ?? 0) * 400 * 100) / 100,
     counted_by_piece: product.piece_weight !== undefined,
+    replaced_by: state.replaced_by,
+    deleted: state.deleted_at !== null,
+    selectable: isSelectable(state),
   };
 }
 
 export class DuplicateProductError extends Error {}
+
+/** The product was replaced by a newer version (IF-001 product.not_selectable). */
+export class NotSelectableError extends Error {}
+
+/** Which products listProducts returns (IF-001@1.2.0 state parameter). */
+export type ListState = "selectable" | "deleted";
 
 /** Storage seam. Postgres comes later; the real store enforces R-003 by a unique index too. */
 export interface ProductStore {
@@ -92,6 +126,21 @@ export interface ProductStore {
   findSelectable(name: string, shop: string): Promise<Product | undefined>;
   /** Throws DuplicateProductError when R-003 would be broken. */
   add(product: NewProduct): Promise<Product>;
+  /** Any product by id, in any state (ADR-010/C-003). */
+  get(id: string): Promise<ProductRecord | undefined>;
+  /** Selectable or soft-deleted products, ordered by name then shop ignoring letter case. Replaced versions never appear. */
+  listByState(state: ListState): Promise<ProductRecord[]>;
+  /**
+   * Soft delete (R-006), deleted_at = at. Already deleted: returned unchanged. Undefined when the id is unknown.
+   * Throws NotSelectableError when the product was replaced.
+   */
+  softDelete(id: string, at: Date): Promise<ProductRecord | undefined>;
+  /**
+   * Clears deleted_at. Already selectable: returned unchanged. Undefined when the id is unknown.
+   * Throws DuplicateProductError when a selectable product has the same name and shop (R-003, R-006),
+   * NotSelectableError when the product was replaced.
+   */
+  restore(id: string): Promise<ProductRecord | undefined>;
 }
 
 /** R-003: compare ignoring letter case and leading, trailing or repeated spaces. */
@@ -101,13 +150,20 @@ export function normaliseKey(text: string): string {
 
 export class InMemoryProductStore implements ProductStore {
   private readonly items: Product[] = [];
+  private readonly states = new Map<string, ProductState>();
 
   constructor(private readonly newId: () => string) {}
+
+  private stateOf(id: string): ProductState {
+    return this.states.get(id) ?? SELECTABLE_STATE;
+  }
 
   async findSelectable(name: string, shop: string): Promise<Product | undefined> {
     const n = normaliseKey(name);
     const s = normaliseKey(shop);
-    return this.items.find((p) => normaliseKey(p.name) === n && normaliseKey(p.shop) === s);
+    return this.items.find(
+      (p) => isSelectable(this.stateOf(p.id)) && normaliseKey(p.name) === n && normaliseKey(p.shop) === s,
+    );
   }
 
   async add(product: NewProduct): Promise<Product> {
@@ -117,6 +173,45 @@ export class InMemoryProductStore implements ProductStore {
     const saved: Product = { ...product, id: this.newId() };
     this.items.push(saved);
     return saved;
+  }
+
+  async get(id: string): Promise<ProductRecord | undefined> {
+    const product = this.items.find((p) => p.id === id);
+    return product ? { product, state: this.stateOf(id) } : undefined;
+  }
+
+  async listByState(state: ListState): Promise<ProductRecord[]> {
+    const key = (p: Product): string => `${p.name.toLowerCase()}\u0000${p.shop.toLowerCase()}`;
+    return this.items
+      .map((product) => ({ product, state: this.stateOf(product.id) }))
+      .filter((r) => (state === "selectable" ? isSelectable(r.state) : r.state.deleted_at !== null))
+      .sort((a, b) => (key(a.product) < key(b.product) ? -1 : key(a.product) > key(b.product) ? 1 : 0));
+  }
+
+  async softDelete(id: string, at: Date): Promise<ProductRecord | undefined> {
+    const record = await this.get(id);
+    if (!record) return undefined;
+    if (record.state.replaced_by !== null) throw new NotSelectableError("replaced by a newer version");
+    if (record.state.deleted_at === null) this.states.set(id, { replaced_by: null, deleted_at: at });
+    return this.get(id);
+  }
+
+  async restore(id: string): Promise<ProductRecord | undefined> {
+    const record = await this.get(id);
+    if (!record) return undefined;
+    if (record.state.replaced_by !== null) throw new NotSelectableError("replaced by a newer version");
+    if (record.state.deleted_at !== null) {
+      if (await this.findSelectable(record.product.name, record.product.shop)) {
+        throw new DuplicateProductError("duplicate name and shop");
+      }
+      this.states.delete(id);
+    }
+    return this.get(id);
+  }
+
+  /** Test seeding only (CMP-002 seeding_cleanup): sets a state, for example a replaced product. */
+  seedState(id: string, state: ProductState): void {
+    this.states.set(id, state);
   }
 
   list(): readonly Product[] {
@@ -130,6 +225,8 @@ export interface ProductRouteDeps {
   labelProvider?: LabelProvider;
   /** The owner check hook. Absent: every request is refused (fail closed, ADR-004/C-005). */
   isOwner?: (request: FastifyRequest) => boolean | Promise<boolean>;
+  /** The clock seam: deleted_at comes from here (CMP-002 seam_clock). Default: the system clock. */
+  clock?: () => Date;
 }
 
 function cleanText(value: unknown): string | undefined {
@@ -281,7 +378,42 @@ async function readPhoto(request: FastifyRequest): Promise<Uint8Array | undefine
   }
 }
 
+const LIST_STATES: readonly string[] = ["selectable", "deleted"];
+
+function notFound(request: FastifyRequest, reply: FastifyReply): FastifyReply {
+  return sendError(request, reply, 404, "product.not_found", "No product has this id.");
+}
+
+/** Runs a state change on the product named by the :id path parameter and maps its outcomes to IF-001 (R-006). */
+async function changeState(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  run: (id: string) => Promise<ProductRecord | undefined>,
+): Promise<FastifyReply> {
+  try {
+    const record = await run((request.params as { id: string }).id);
+    if (!record) return notFound(request, reply);
+    return reply.code(200).send(toProductResponse(record.product, record.state));
+  } catch (error) {
+    if (error instanceof NotSelectableError) {
+      return sendError(request, reply, 409, "product.not_selectable", "The product was replaced by a newer version.");
+    }
+    if (error instanceof DuplicateProductError) {
+      return sendError(
+        request,
+        reply,
+        409,
+        "product.duplicate_name_shop",
+        "A product with that name and shop already exists.",
+      );
+    }
+    throw error;
+  }
+}
+
 export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDeps): void {
+  const clock = deps.clock ?? ((): Date => new Date());
+
   // IF-001@1.1.0 addProductFromLabelPhoto
   app.post("/products/label-photo", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
@@ -324,5 +456,35 @@ export function registerProductRoutes(app: FastifyInstance, deps: ProductRouteDe
     }
     const source = SOURCES.includes(body.source as string) ? (body.source as ProductSource) : undefined;
     return validateAndSave(deps, request, reply, toRecognised(body), source);
+  });
+
+  // IF-001@1.2.0 listProducts: selectable by default, soft-deleted with state=deleted (R-004, R-006).
+  app.get("/products", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+
+    const asked = (request.query as { state?: unknown }).state ?? "selectable";
+    if (typeof asked !== "string" || !LIST_STATES.includes(asked)) {
+      return sendError(request, reply, 400, "request.invalid", "state must be selectable or deleted.");
+    }
+    const records = await deps.store.listByState(asked as ListState);
+    return reply.code(200).send(records.map((r) => toProductResponse(r.product, r.state)));
+  });
+
+  // IF-001@1.2.0 getProduct: any product by id, in any state (ADR-010/C-003).
+  app.get("/products/:id", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+    return changeState(request, reply, (id) => deps.store.get(id));
+  });
+
+  // IF-001@1.2.0 deleteProduct: soft delete, deleted_at from the injected clock (R-006).
+  app.delete("/products/:id", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+    return changeState(request, reply, (id) => deps.store.softDelete(id, clock()));
+  });
+
+  // IF-001@1.2.0 restoreProduct: refused when a selectable product has the same name and shop (R-003, R-006).
+  app.post("/products/:id/restore", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return refuseUnauthorised(request, reply);
+    return changeState(request, reply, (id) => deps.store.restore(id));
   });
 }

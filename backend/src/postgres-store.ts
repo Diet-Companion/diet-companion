@@ -1,17 +1,23 @@
 import type pg from "pg";
 import {
   DuplicateProductError,
+  NotSelectableError,
+  type ListState,
   type NewProduct,
   type Product,
+  type ProductRecord,
   type ProductSource,
   type ProductStore,
 } from "./products.js";
 
-/** The unique index that enforces R-003 (migration 001). */
+/** The unique index that enforces R-003 (migration 001, rebuilt over selectable rows by migration 004). */
 export const NAME_SHOP_INDEX = "products_name_shop_key";
 
 /** Same expression as the index, so a lookup and the index agree (R-003). */
 const norm = (param: string): string => `lower(btrim(regexp_replace(${param}, '\\s+', ' ', 'g')))`;
+
+/** The one SQL predicate for selectable: neither replaced nor soft-deleted (ADR-010/C-003). */
+const SELECTABLE_SQL = "replaced_by IS NULL AND deleted_at IS NULL";
 
 type ProductRow = {
   id: string;
@@ -31,9 +37,14 @@ type ProductRow = {
   piece_weight_g: number | null;
 };
 
+type RecordRow = ProductRow & { replaced_by: string | null; deleted_at: Date | null };
+
 /** Migration 001 columns, then the optional ones added by migration 003. */
 const COLUMNS =
   "id, name, shop, calories, protein, fat, brand, source, carbohydrate, sugars, fibre, salt, portion_size_g, portion_calories, piece_weight_g";
+
+/** The product columns plus the state columns added by migration 004. */
+const RECORD_COLUMNS = `${COLUMNS}, replaced_by, deleted_at`;
 
 function toProduct(row: ProductRow): Product {
   const product: Product = {
@@ -56,6 +67,10 @@ function toProduct(row: ProductRow): Product {
   return product;
 }
 
+function toRecord(row: RecordRow): ProductRecord {
+  return { product: toProduct(row), state: { replaced_by: row.replaced_by, deleted_at: row.deleted_at } };
+}
+
 function isNameShopViolation(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const e = error as { code?: unknown; constraint?: unknown };
@@ -71,7 +86,7 @@ export class PostgresProductStore implements ProductStore {
 
   async findSelectable(name: string, shop: string): Promise<Product | undefined> {
     const result = await this.pool.query<ProductRow>(
-      `SELECT ${COLUMNS} FROM products WHERE ${norm("name")} = ${norm("$1::text")} AND ${norm("shop")} = ${norm("$2::text")} LIMIT 1`,
+      `SELECT ${COLUMNS} FROM products WHERE ${SELECTABLE_SQL} AND ${norm("name")} = ${norm("$1::text")} AND ${norm("shop")} = ${norm("$2::text")} LIMIT 1`,
       [name, shop],
     );
     const row = result.rows[0];
@@ -107,5 +122,49 @@ export class PostgresProductStore implements ProductStore {
       if (isNameShopViolation(error)) throw new DuplicateProductError("duplicate name and shop");
       throw error;
     }
+  }
+
+  async get(id: string): Promise<ProductRecord | undefined> {
+    const result = await this.pool.query<RecordRow>(`SELECT ${RECORD_COLUMNS} FROM products WHERE id = $1`, [id]);
+    const row = result.rows[0];
+    return row ? toRecord(row) : undefined;
+  }
+
+  async listByState(state: ListState): Promise<ProductRecord[]> {
+    const where = state === "selectable" ? SELECTABLE_SQL : "deleted_at IS NOT NULL";
+    const result = await this.pool.query<RecordRow>(
+      `SELECT ${RECORD_COLUMNS} FROM products WHERE ${where} ORDER BY lower(name), lower(shop), id`,
+    );
+    return result.rows.map(toRecord);
+  }
+
+  async softDelete(id: string, at: Date): Promise<ProductRecord | undefined> {
+    const result = await this.pool.query<RecordRow>(
+      `UPDATE products SET deleted_at = $2::timestamptz WHERE id = $1 AND ${SELECTABLE_SQL} RETURNING ${RECORD_COLUMNS}`,
+      [id, at],
+    );
+    const row = result.rows[0];
+    return row ? toRecord(row) : this.unchanged(id);
+  }
+
+  async restore(id: string): Promise<ProductRecord | undefined> {
+    try {
+      const result = await this.pool.query<RecordRow>(
+        `UPDATE products SET deleted_at = NULL WHERE id = $1 AND deleted_at IS NOT NULL AND replaced_by IS NULL RETURNING ${RECORD_COLUMNS}`,
+        [id],
+      );
+      const row = result.rows[0];
+      return row ? toRecord(row) : await this.unchanged(id);
+    } catch (error) {
+      if (isNameShopViolation(error)) throw new DuplicateProductError("duplicate name and shop");
+      throw error;
+    }
+  }
+
+  /** The conditional update matched no row: unknown id, replaced (refused), or already in the wanted state. */
+  private async unchanged(id: string): Promise<ProductRecord | undefined> {
+    const record = await this.get(id);
+    if (record && record.state.replaced_by !== null) throw new NotSelectableError("replaced by a newer version");
+    return record;
   }
 }
