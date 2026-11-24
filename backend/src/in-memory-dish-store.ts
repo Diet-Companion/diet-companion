@@ -1,6 +1,9 @@
 import {
   DishNotSelectableError,
   isDishSelectable,
+  sameLines,
+  type DishChanges,
+  type DishEditOutcome,
   type DishRecord,
   type DishState,
   type DishStore,
@@ -54,6 +57,23 @@ export class InMemoryDishStore implements DishStore {
     if (record.state.replaced_by !== null) throw new DishNotSelectableError("replaced by a newer version");
     record.state = { replaced_by: null, deleted_at: null };
     return record;
+  }
+
+  async edit(id: string, changes: DishChanges, at: Date): Promise<DishEditOutcome | undefined> {
+    const record = await this.get(id);
+    if (!record) return undefined;
+    if (!isDishSelectable(record.state)) throw new DishNotSelectableError("replaced or deleted");
+    const linesChanged = changes.lines !== undefined && !sameLines(record.dish.lines, changes.lines);
+    const nameChanged = changes.name !== undefined && changes.name !== record.dish.name;
+    if (linesChanged && changes.lines) {
+      const created = await this.add({ name: changes.name ?? record.dish.name, lines: changes.lines }, at);
+      record.state = { replaced_by: created.dish.id, deleted_at: null };
+      return { record: created, versioned: true, replaced_id: id };
+    }
+    if (nameChanged && changes.name !== undefined) {
+      record.dish = { ...record.dish, name: changes.name };
+    }
+    return { record, versioned: false, replaced_id: null };
   }
 
   /** Test seeding only: sets a state, for example a replaced dish. */

@@ -1,6 +1,10 @@
 import type pg from "pg";
 import {
   DishNotSelectableError,
+  isDishSelectable,
+  sameLines,
+  type DishChanges,
+  type DishEditOutcome,
   type DishLine,
   type DishRecord,
   type DishStore,
@@ -45,19 +49,24 @@ export class PostgresDishStore implements DishStore {
     }));
   }
 
+  /** Inserts a dish and its lines on an open transaction. */
+  private async insertDish(client: pg.PoolClient, id: string, dish: NewDish, at: Date): Promise<void> {
+    await client.query("INSERT INTO dishes (id, name, created_at) VALUES ($1, $2, $3::timestamptz)", [id, dish.name, at]);
+    for (const [position, line] of dish.lines.entries()) {
+      await client.query(
+        "INSERT INTO dish_lines (dish_id, position, product_id, grams, pieces) VALUES ($1, $2, $3, $4, $5)",
+        [id, position, line.product_id, line.grams, line.pieces],
+      );
+    }
+  }
+
   /** The dish and its lines are inserted in one transaction (ADR-012/C-004). Lines are never updated afterwards (C-002). */
   async add(dish: NewDish, at: Date): Promise<DishRecord> {
     const id = this.newId();
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query("INSERT INTO dishes (id, name, created_at) VALUES ($1, $2, $3::timestamptz)", [id, dish.name, at]);
-      for (const [position, line] of dish.lines.entries()) {
-        await client.query(
-          "INSERT INTO dish_lines (dish_id, position, product_id, grams, pieces) VALUES ($1, $2, $3, $4, $5)",
-          [id, position, line.product_id, line.grams, line.pieces],
-        );
-      }
+      await this.insertDish(client, id, dish, at);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -94,6 +103,53 @@ export class PostgresDishStore implements DishStore {
       [id],
     );
     return this.settled(id);
+  }
+
+  /**
+   * One transaction under FOR UPDATE on the dish row, as editProduct does (R-008, ADR-013 a). A lines change sets
+   * replaced_by on the old row and then inserts the new dish; the foreign key is deferred, so the order is safe.
+   * The old lines are never touched (ADR-012/C-002).
+   */
+  async edit(id: string, changes: DishChanges, at: Date): Promise<DishEditOutcome | undefined> {
+    const client = await this.pool.connect();
+    let resultId = id;
+    let versioned = false;
+    try {
+      await client.query("BEGIN");
+      const found = await client.query<DishRow>(`SELECT ${DISH_COLUMNS} FROM dishes WHERE id = $1 FOR UPDATE`, [id]);
+      const row = found.rows[0];
+      if (!row) {
+        await client.query("ROLLBACK");
+        return undefined;
+      }
+      if (!isDishSelectable({ replaced_by: row.replaced_by, deleted_at: row.deleted_at })) {
+        throw new DishNotSelectableError("replaced or deleted");
+      }
+      const lineRows = await client.query<LineRow>(
+        `SELECT ${LINE_COLUMNS} FROM dish_lines WHERE dish_id = $1 ORDER BY position`,
+        [id],
+      );
+      const linesChanged = changes.lines !== undefined && !sameLines(lineRows.rows, changes.lines);
+      const nameChanged = changes.name !== undefined && changes.name !== row.name;
+      if (linesChanged && changes.lines) {
+        const newId = this.newId();
+        await client.query("UPDATE dishes SET replaced_by = $2 WHERE id = $1", [id, newId]);
+        await this.insertDish(client, newId, { name: changes.name ?? row.name, lines: changes.lines }, at);
+        resultId = newId;
+        versioned = true;
+      } else if (nameChanged) {
+        await client.query("UPDATE dishes SET name = $2 WHERE id = $1", [id, changes.name]);
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+    const record = await this.get(resultId);
+    if (!record) throw new Error("edit returned no row");
+    return { record, versioned, replaced_id: versioned ? id : null };
   }
 
   /** After a conditional update: the dish as it is now, or a refusal when it was replaced. */
