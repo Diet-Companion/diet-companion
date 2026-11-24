@@ -1,0 +1,91 @@
+# Deploy main to Cloud Run (S-DEVOPS-035 stages 2 and 4, ADR-006 c).
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# Every push to main builds one image, tagged with the commit and pushed to Artifact Registry. Nothing
+# is rebuilt later. The `production` environment waits for the operator's approval, which is the human gate
+# (S-DEVOPS-036). After approval, migrations run as a Cloud Run job, then the service is deployed.
+# GCP access is keyless: Workload Identity Federation trusts only this repo's refs/heads/main.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  PROJECT: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/app/diet-companion:${{ github.sha }}
+  SQL_INSTANCE: ${{ vars.GCP_PROJECT_ID }}:${{ vars.GCP_REGION }}:diet-companion-db
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # the OIDC token for Workload Identity Federation, nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Build and push the image
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker build --pull=false -t "$IMAGE" .
+          docker push "$IMAGE"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production   # waits for the operator's approval
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Migrations first (S-DEVOPS-038), from the same image, as a Cloud Run job (ADR-008/C-002).
+      - name: Run the migrations
+        env:
+          RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs deploy migrate --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
+            --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
+            --set-secrets DATABASE_URL=database-url:latest \
+            --command node --args backend/dist/migrate.js \
+            --max-retries 0 --task-timeout 300s --execute-now --wait --quiet
+
+      - name: Deploy the service
+        env:
+          RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+        run: |
+          set -euo pipefail
+          gcloud run deploy diet-companion --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
+            --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
+            --set-secrets DATABASE_URL=database-url:latest,OWNER_PASSWORD_HASH=owner-password-hash:latest \
+            --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi --cpu 1 \
+            --quiet
+          url=$(gcloud run services describe diet-companion --project "$PROJECT" --region "$REGION" --format='value(status.url)')
+          echo "Deployed: $url"
+          curl -fsS "$url/readiness"

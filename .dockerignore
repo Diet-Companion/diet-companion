@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+reports
+.git
+.github
+.staff
+architecture
+requirements
+knowledge
+docs
+*.md
+.env
+.env.*
