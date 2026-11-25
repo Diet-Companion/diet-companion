@@ -5,4 +5,9 @@ residency:
 # Anthropic, billed to the operator's Claude subscription via the CLAUDE_CODE_OAUTH_TOKEN secret.
 # A product-level exception to S-SEC-008 (no long-lived personal tokens), decided 2026-11-21.
 model_endpoint: claude-subscription
-testability: []                # no S-TESTAB items yet; the Analyst needs none (S-BA-045)
+# Testability manifest (S-TESTAB-001): the items the product provides. The Analyst needs none (S-BA-045);
+# the Developer needs 002, 003 and 006 (S-DEV-035).
+testability:
+  - S-TESTAB-002   # isolated test environment: each CI job gets its own throwaway PostgreSQL service
+  - S-TESTAB-003   # digest-addressed builds: main (deploy.yml) and every PR commit (ci.yml `image`, pr-builds)
+  - S-TESTAB-006   # oracle sources: ready ACs in requirements/, approved interface versions in architecture/
