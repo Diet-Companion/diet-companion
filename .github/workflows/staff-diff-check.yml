@@ -1,0 +1,184 @@
+# Staff code diff check (S-DEV-018, S-DEV-028, G3). No model.
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# Runs on every PR, and again when an operator comments `/signoff DIFF-...` on one. It posts one commit
+# status, `staff/diff-check`, on the PR head: make it required in the ruleset. DEV agent PRs (head branch
+# agent/developer/* or agent/dev-upkeep/*, or opened by the engineering App) are checked:
+#   flagged  a removed, skipped or weakened test; a changed guard line; an added lint suppression; any
+#            change under `protected` or `verification_config`; a dependency change; a
+#            not_unit_observable declaration. Each flag needs an operator's `/signoff <flag ID>` comment;
+#            a push that changes the flagged element gives it a new ID, which voids the old sign-off.
+#   blocked  deleting a `protected` or `verification_config` file, a hand edit under `generated`, and a
+#            refactor or upkeep PR that changes an assertion. No sign-off clears these.
+# Any other PR gets a passing status at once.
+#
+# Runs from the BASE branch (pull_request_target, issue_comment), so a PR can't change the check that
+# gates it. The code map comes from the base commit. The PR head is fetched only as git data for the diff
+# and never executed. Writes: the status, one summary comment (updated in place), the dev:dependency label.
+name: staff-diff-check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+
+permissions: {}
+
+env:
+  # Pinned staff commit (S-GEN-016).
+  STAFF_SHA: e6d907c18210ac87a06d91b65bb3acbfc6de07dc
+  STAFF_REPO: Diet-Companion/staff
+  DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
+  STATUS_CONTEXT: staff/diff-check
+  MARKER: "<!-- staff-dev-diff-check:v1 -->"
+  PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+
+# The latest event per PR wins; an older run's status would be stale anyway.
+concurrency:
+  group: >-
+    ${{ (github.event_name == 'pull_request_target' || github.event.issue.pull_request)
+        && format('staff-diff-check-{0}', github.event.pull_request.number || github.event.issue.number)
+        || format('staff-diff-check-noop-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  diff-check:
+    # Comments matter only when they may carry a sign-off.
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request && github.event.comment.user.type == 'User' &&
+       contains(github.event.comment.body, '/signoff'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write   # the one summary comment
+      issues: write          # the dev:dependency label
+      statuses: write
+    steps:
+      - name: Check out staff at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STAFF_REPO }}
+          ref: ${{ env.STAFF_SHA }}
+          path: staff
+          persist-credentials: false
+
+      - name: Resolve the PR (and filter comment events)
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = issue_comment ] && \
+             ! python3 staff/harness/contract.py is-operator --operators staff/governance/operators.yml --login "$COMMENTER"; then
+            echo "Comment by a non-operator; skipping."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          read -r head_sha base_sha head_repo state head_ref author < <(gh api "repos/$REPO/pulls/$PR" \
+            --jq '[.head.sha, .base.sha, .head.repo.full_name, .state, .head.ref, .user.login] | @tsv')
+          echo "$head_sha$base_sha" | grep -Eq '^[0-9a-f]{80}$' || { echo "::error::unexpected SHAs"; exit 1; }
+          [ "$state" = open ] || { echo "PR is not open; skipping."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          agent=false
+          case "$head_ref" in agent/developer/*|agent/dev-upkeep/*) agent=true ;; esac
+          [ "$author" = "$DEVELOPER_BOT_LOGIN" ] && agent=true
+          {
+            echo "run=true"
+            echo "agent=$agent"
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "fork=$([ "$head_repo" = "$REPO" ] && echo false || echo true)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Not a DEV agent PR
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=success -f context="$STATUS_CONTEXT" \
+            -f description="Not a DEV agent PR: the code diff check applies to agent PRs only" --silent
+
+      - name: Fork PRs are not checked
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context="$STATUS_CONTEXT" \
+            -f description="An agent branch must live in this repo" --silent
+          exit 1
+
+      # Full history of the head, so the merge base is reachable. Data only: nothing in it runs.
+      - name: Check out the PR head (data, never executed)
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        with:
+          python-version: "3.12"
+
+      - name: Run the check, post the status, the summary and the label
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          python -m pip install -q --no-deps --only-binary ':all:' -r staff/harness/requirements.txt || exit 1
+          work="$RUNNER_TEMP/diff"; mkdir -p "$work"
+          export STAFF_REASON_FILE="$work/reason"
+          # The code map from the base commit: a PR can't loosen the rules it is checked against.
+          git -C head show "$BASE_SHA:.staff/code.yml" > "$work/code.yml" || exit 1
+          gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" > "$work/comments.json" || exit 1
+          # The validated PR block the publish job wrote into the body (base64), if any.
+          pr_block=()
+          gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' \
+            | sed -n 's/.*<!-- staff-pr-block:v1 \([A-Za-z0-9+/=]*\) -->.*/\1/p' | head -n 1 > "$work/block.b64"
+          if [ -s "$work/block.b64" ] && base64 -d "$work/block.b64" > "$work/block.json" 2>/dev/null; then
+            pr_block=(--pr-block "$work/block.json")
+          fi
+          desc=$(python staff/harness/dev_diff_check.py \
+            --repo head --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --code-map "$work/code.yml" --schema staff/plugins/staff-engineering/schemas/code-map.schema.json \
+            --operators staff/governance/operators.yml --comments "$work/comments.json" "${pr_block[@]}" \
+            --out "$work/result.json" --summary "$work/summary.md")
+          rc=$?
+          case "$rc" in
+            0) state=success ;;
+            1) state=failure ;;
+            *) state=error; desc="Diff check error: $(cat "$work/reason" 2>/dev/null || echo unknown)" ;;
+          esac
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="${desc:0:140}" -f target_url="$RUN_URL" --silent
+          echo "status $STATUS_CONTEXT: $state ($desc)"
+          if [ -s "$work/summary.md" ]; then
+            cat "$work/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            # One summary comment per PR, updated in place; posted only once there is something to say.
+            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\")))][0].id // empty" | head -n 1)
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$work/summary.md" --silent
+            elif jq -e '(.flags | length) + (.blocked | length) > 0' "$work/result.json" > /dev/null; then
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -F "body=@$work/summary.md" --silent
+            fi
+          fi
+          if jq -e '.needs_label | index("dev:dependency")' "$work/result.json" > /dev/null 2>&1; then
+            gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=dev:dependency" --silent
+          fi
+          exit "$rc"
