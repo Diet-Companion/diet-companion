@@ -1,12 +1,22 @@
 // Dishes (REQ-006, IF-001@1.3.0): the dish screens' pure logic, no browser needed.
 
+import type { Product } from "./api";
 import type { Dish, DishChangeResult, DishLine, DishListResult, DishState } from "./dishApi";
+import type { DishFormValues, FormErrors } from "./dishFormLogic";
 import { formatNumber } from "./edit";
 
 export type DishScreen =
   | { name: "dishes_busy" }
   | { name: "dishes"; view: DishState; dishes: Dish[]; filter: string; notice: string | null }
-  | { name: "dish"; dish: Dish; confirmDelete: boolean };
+  | { name: "dish"; dish: Dish; confirmDelete: boolean; notice?: string | null }
+  | {
+      name: "dish_form";
+      original: Dish | null;
+      products: Product[];
+      values: DishFormValues;
+      errors: FormErrors;
+      notice: string | null;
+    };
 
 export type DishNext =
   | { kind: "screen"; screen: DishScreen }

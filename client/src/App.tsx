@@ -1,8 +1,19 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
-import { createDishApi, type DishState } from "./dishApi";
+import { createDishApi, type Dish, type DishState } from "./dishApi";
 import { DishScreens } from "./DishViews";
 import {
+  buildCreate,
+  buildEdit,
+  dishToForm,
+  emptyErrors,
+  emptyForm,
+  writeOutcome,
+  type DishFormOutcome,
+  type DishFormValues,
+} from "./dishFormLogic";
+import {
+  DISH_LIST_FAILED_TEXT,
   deleteDishOutcome,
   nextAfterDishList,
   restoreDishOutcome,
@@ -606,6 +617,76 @@ export function App(props: AppProps = {}) {
     }
   }
 
+  // The dish form needs the selectable products for its picker. original is null for a new dish.
+  async function openDishForm(original: Dish | null) {
+    setDishScreen({ name: "dishes_busy" });
+    const result = await api.listProducts("selectable");
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    if (result.kind === "ok") {
+      setDishScreen({
+        name: "dish_form",
+        original,
+        products: result.products,
+        values: original ? dishToForm(original) : emptyForm(),
+        errors: emptyErrors(),
+        notice: null,
+      });
+    } else if (result.kind === "unauthorized") {
+      applyDishNext({ kind: "login" });
+    } else {
+      applyDishNext({ kind: "failed", message: result.message ?? DISH_LIST_FAILED_TEXT });
+    }
+  }
+
+  async function applyFormOutcome(
+    outcome: DishFormOutcome,
+    form: Extract<DishScreen, { name: "dish_form" }>,
+    values: DishFormValues,
+  ) {
+    if (outcome.kind === "reload") {
+      await openDishes("selectable", outcome.notice);
+    } else if (outcome.kind === "dish") {
+      setDishScreen({ name: "dish", dish: outcome.dish, confirmDelete: false, notice: outcome.notice });
+    } else if (outcome.kind === "stay") {
+      setDishScreen({ ...form, values, errors: outcome.errors, notice: outcome.notice });
+    } else {
+      setDishScreen(null);
+      setScreen({ name: "login", error: null });
+    }
+  }
+
+  // Check the form first; send only what the logic builds. A refusal keeps the form filled.
+  async function submitDishForm(form: Extract<DishScreen, { name: "dish_form" }>, values: DishFormValues) {
+    const { original, products } = form;
+    let pending;
+    let sent: number[];
+    if (original === null) {
+      const built = buildCreate(values, products);
+      if (!built.ok) {
+        setDishScreen({ ...form, values, errors: built.errors, notice: null });
+        return;
+      }
+      sent = built.sent;
+      pending = dishApi.createDish(built.input);
+    } else {
+      const built = buildEdit(original, values, products);
+      if (!built.ok) {
+        setDishScreen({ ...form, values, errors: built.errors, notice: null });
+        return;
+      }
+      if (built.update === null) {
+        setDishScreen({ ...form, values, errors: emptyErrors(), notice: NO_CHANGES_TEXT });
+        return;
+      }
+      sent = built.sent;
+      pending = dishApi.editDish(original.id, built.update);
+    }
+    setDishScreen({ name: "dishes_busy" });
+    const result = await pending;
+    if (result.kind === "unauthorized") clearSignedIn(storage);
+    await applyFormOutcome(writeOutcome(result, sent, original !== null), form, values);
+  }
+
   async function login(password: string) {
     const result = await api.loginOwner(password);
     if (result.kind === "ok") {
@@ -638,6 +719,13 @@ export function App(props: AppProps = {}) {
           onAskDelete={() => setDishScreen((s) => (s && s.name === "dish" ? { ...s, confirmDelete: true } : s))}
           onCancelDelete={() => setDishScreen((s) => (s && s.name === "dish" ? { ...s, confirmDelete: false } : s))}
           onConfirmDelete={(dish) => void changeDish(dishApi.deleteDish(dish.id), deleteDishOutcome)}
+          onNewDish={() => void openDishForm(null)}
+          onEditDish={(dish) => void openDishForm(dish)}
+          onSubmitForm={(form, values) => void submitDishForm(form, values)}
+          onCancelForm={(form) => {
+            if (form.original) setDishScreen({ name: "dish", dish: form.original, confirmDelete: false });
+            else void openDishes();
+          }}
         />
       ) : (
         <ScreenView

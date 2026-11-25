@@ -1,6 +1,10 @@
+import { DishFormView } from "./DishFormView";
 import type { Dish, DishState } from "./dishApi";
+import type { DishFormValues } from "./dishFormLogic";
 import { UNSELECTABLE_PRODUCT_TEXT, filterDishes, lineIsMarked, lineText, type DishScreen } from "./dishes";
 import { formatNumber } from "./edit";
+
+type FormScreen = Extract<DishScreen, { name: "dish_form" }>;
 
 export interface DishScreensProps {
   screen: DishScreen;
@@ -13,6 +17,10 @@ export interface DishScreensProps {
   onAskDelete: () => void;
   onCancelDelete: () => void;
   onConfirmDelete: (dish: Dish) => void;
+  onNewDish?: () => void;
+  onEditDish?: (dish: Dish) => void;
+  onSubmitForm?: (screen: FormScreen, values: DishFormValues) => void;
+  onCancelForm?: (screen: FormScreen) => void;
 }
 
 function DishList(props: DishScreensProps & { screen: Extract<DishScreen, { name: "dishes" }> }) {
@@ -33,6 +41,11 @@ function DishList(props: DishScreensProps & { screen: Extract<DishScreen, { name
       <button type="button" data-testid="dishes-toggle" onClick={() => props.onShowView(deleted ? "selectable" : "deleted")}>
         {deleted ? "Show dishes" : "Show deleted"}
       </button>
+      {deleted ? null : (
+        <button type="button" data-testid="new-dish" onClick={() => props.onNewDish?.()}>
+          New dish
+        </button>
+      )}
       <div className="field">
         <label htmlFor="dishes-filter">Filter by name</label>
         <input
@@ -72,10 +85,15 @@ function DishList(props: DishScreensProps & { screen: Extract<DishScreen, { name
 }
 
 function DishPage(props: DishScreensProps & { screen: Extract<DishScreen, { name: "dish" }> }) {
-  const { dish, confirmDelete } = props.screen;
+  const { dish, confirmDelete, notice } = props.screen;
   return (
     <section data-testid="dish">
       <h2>{dish.name}</h2>
+      {notice ? (
+        <p role="status" data-testid="dish-notice">
+          {notice}
+        </p>
+      ) : null}
       <ul>
         {dish.lines.map((line) => (
           <li key={line.position} data-testid="dish-line">
@@ -98,9 +116,16 @@ function DishPage(props: DishScreensProps & { screen: Extract<DishScreen, { name
           </button>
         </div>
       ) : (
-        <button type="button" data-testid="delete-dish" onClick={props.onAskDelete}>
-          Delete
-        </button>
+        <>
+          {dish.selectable ? (
+            <button type="button" data-testid="edit-dish" onClick={() => props.onEditDish?.(dish)}>
+              Edit
+            </button>
+          ) : null}
+          <button type="button" data-testid="delete-dish" onClick={props.onAskDelete}>
+            Delete
+          </button>
+        </>
       )}
       <button type="button" data-testid="dish-back" onClick={props.onBackToList}>
         Back to dishes
@@ -122,5 +147,17 @@ export function DishScreens(props: DishScreensProps) {
       return <DishList {...props} screen={screen} />;
     case "dish":
       return <DishPage {...props} screen={screen} />;
+    case "dish_form":
+      return (
+        <DishFormView
+          original={screen.original}
+          products={screen.products}
+          values={screen.values}
+          errors={screen.errors}
+          notice={screen.notice}
+          onSubmit={(values) => props.onSubmitForm?.(screen, values)}
+          onCancel={() => props.onCancelForm?.(screen)}
+        />
+      );
   }
 }
