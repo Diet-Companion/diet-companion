@@ -1,0 +1,10 @@
+# Agent stages per area (S-GEN-050). HUMAN-ONLY FILE (S-GEN-025): only the human edits and merges it.
+# Every agent workflow reads it from the default branch and takes the lowest of this value and the
+# demotion ceiling (the STAGE_CEILINGS variable). An agent or area not listed here is at stage 1.
+# Stages (S-GEN-052): 1 advisory, 2 proposing (opens PRs, each fully reviewed), 3 light-review lane,
+# 4 wider scope.
+stages:
+  developer:
+    # Promoted 2026-11-25 (docs/decisions.md): two consecutive passing promotion-eval runs on set
+    # 91f0348191 and 16 of 20 verdicts confirmed. It has no stage 3 (S-DEV-037).
+    system: 2
