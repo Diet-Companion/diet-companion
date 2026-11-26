@@ -1,6 +1,5 @@
 import type { Product } from "./api";
 import type { Dish } from "./dishApi";
-import { EntryFields } from "./EntryFields";
 import { MEALS, type DaySheet, type Meal, type PlanEntry, type PlanSubject } from "./planApi";
 import { EMPTY_FORM, MEAL_LABELS, formKey, markOf, type FormValues } from "./planLogic";
 import { amountText, type PlanState } from "./planScreenLogic";
@@ -98,16 +97,47 @@ function MealBlock(props: { day: DaySheet; meal: Meal; view: PlanViewProps }) {
           view.onSubmit(day.date, meal);
         }}
       >
-        <EntryFields
-          values={values}
-          products={view.products}
-          dishes={view.dishes}
-          testIds={{
-            select: `plan-entry-select-${meal}`,
-            grams: `plan-entry-grams-${meal}`,
-            pieces: `plan-entry-pieces-${meal}`,
-          }}
-          onValues={(next) => view.onForm(day.date, meal, next)}
+        <select
+          aria-label="Product or dish"
+          value={values.subject}
+          onChange={(e) => view.onForm(day.date, meal, { ...values, subject: e.target.value })}
+          data-testid={`plan-entry-select-${meal}`}
+        >
+          <option value="">Choose a product or dish</option>
+          <optgroup label="Products">
+            {view.products.map((p) => (
+              <option key={p.id} value={`p:${p.id}`}>
+                {p.name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Dishes">
+            {view.dishes.map((d) => (
+              <option key={d.id} value={`d:${d.id}`}>
+                {d.name}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+        <input
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          aria-label="Grams"
+          placeholder="Grams"
+          value={values.grams}
+          onChange={(e) => view.onForm(day.date, meal, { ...values, grams: e.target.value })}
+          data-testid={`plan-entry-grams-${meal}`}
+        />
+        <input
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          aria-label="Pieces"
+          placeholder="Pieces"
+          value={values.pieces}
+          onChange={(e) => view.onForm(day.date, meal, { ...values, pieces: e.target.value })}
+          data-testid={`plan-entry-pieces-${meal}`}
         />
         <button type="submit" disabled={view.busy} data-testid={`plan-entry-save-${meal}`}>
           Add
