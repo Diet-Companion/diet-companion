@@ -6,12 +6,16 @@ import { buildApp } from "./app.js";
 import { PostgresSessionStore, PostgresThrottleStore } from "./auth/postgres-auth-store.js";
 import { PostgresDishStore } from "./postgres-dish-store.js";
 import { PostgresProductStore } from "./postgres-store.js";
+import { PostgresTargetStore } from "./postgres-target-store.js";
 import { parseServerConfig } from "./server-config.js";
 import { registerClient } from "./static.js";
+import { parseOwnerTimeZone } from "./today.js";
 
 /** The production entry (backend script `start`). Migrations run as a separate step. */
 async function main(): Promise<void> {
   const config = parseServerConfig(process.env);
+  // Refuses to start when OWNER_TIME_ZONE is missing or not a valid IANA zone (ADR-016/C-002).
+  const timeZone = parseOwnerTimeZone(process.env);
 
   const pool = new pg.Pool({ connectionString: config.databaseUrl });
   // An idle client can fail (for example a restart of the database); log the message only, never connection details.
@@ -32,6 +36,8 @@ async function main(): Promise<void> {
   const app = buildApp({
     store: new PostgresProductStore(pool, randomUUID),
     dishStore: new PostgresDishStore(pool, randomUUID),
+    targetStore: new PostgresTargetStore(pool),
+    timeZone,
     auth: {
       sessions: new PostgresSessionStore(pool),
       throttle: new PostgresThrottleStore(pool),

@@ -11,6 +11,8 @@ import {
   registerProductRoutes,
   type ProductRouteDeps,
 } from "./products.js";
+import { InMemoryTargetStore, type TargetStore } from "./target-store.js";
+import { registerTargetRoutes } from "./targets.js";
 
 export type ReadinessCheck = () => boolean | Promise<boolean>;
 
@@ -29,6 +31,13 @@ export interface AppOptions extends Partial<ProductRouteDeps> {
   auth?: AuthDeps;
   /** The dish storage seam (IF-001@1.3.0 dish routes). Default: an in-memory store. */
   dishStore?: DishStore;
+  /** The target range storage seam (IF-001@1.4.0). Default: an in-memory store. */
+  targetStore?: TargetStore;
+  /**
+   * The Owner's IANA time zone (ADR-016). The production entry always passes the parsed OWNER_TIME_ZONE;
+   * the UTC default is for tests that do not care about the day boundary.
+   */
+  timeZone?: string;
 }
 
 interface ReadinessBody {
@@ -89,6 +98,13 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     products,
     isOwner,
     clock: options.clock,
+  });
+  // IF-001@1.4.0 target range operations.
+  registerTargetRoutes(app, {
+    targets: options.targetStore ?? new InMemoryTargetStore(),
+    isOwner,
+    clock: options.clock,
+    timeZone: options.timeZone ?? "UTC",
   });
 
   return app;
