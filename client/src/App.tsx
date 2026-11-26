@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
 import { createDishApi, type Dish, type DishState } from "./dishApi";
 import { DishScreens } from "./DishViews";
+import { TargetsScreen } from "./TargetsScreen";
 import { TargetsSetupView } from "./TargetsSetupView";
 import { CHECKING, OPEN, gateAfterRanges, gateAfterSave, saveNutrient, setField, withResult, type TargetsGate } from "./targets";
 import { createTargetsApi, type Nutrient } from "./targetsApi";
@@ -501,6 +502,8 @@ export interface AppProps {
   fetchFn?: FetchLike;
   storage?: KeyValueStorage | null;
   newRunId?: () => string;
+  /** Starts the targets gate in a given phase; tests use it to show the gate without running effects. */
+  initialGate?: TargetsGate;
 }
 
 function browserStorage(): KeyValueStorage | null {
@@ -531,8 +534,12 @@ export function App(props: AppProps = {}) {
   const [screen, setScreen] = useState<Screen>(() => initialScreen(storage));
   // The dish screens sit on top of the product screens; null means the product screens show.
   const [dishScreen, setDishScreen] = useState<DishScreen | null>(null);
+  // The targets screen (change ranges) sits on top of the other screens while it is open.
+  const [targetsOpen, setTargetsOpen] = useState(false);
   // Until all three target ranges are saved, only the targets setup shows (REQ-009/AC-001).
-  const [gate, setGate] = useState<TargetsGate>(() => (initialScreen(storage).name === "login" ? OPEN : CHECKING));
+  const [gate, setGate] = useState<TargetsGate>(
+    () => props.initialGate ?? (initialScreen(storage).name === "login" ? OPEN : CHECKING),
+  );
   const signedIn = screen.name !== "login";
 
   async function apply(pending: ReturnType<typeof api.createProduct>) {
@@ -739,6 +746,7 @@ export function App(props: AppProps = {}) {
     await api.logout();
     clearSignedIn(storage);
     setDishScreen(null);
+    setTargetsOpen(false);
     setGate(OPEN);
     setScreen({ name: "login", error: null });
   }
@@ -777,7 +785,18 @@ export function App(props: AppProps = {}) {
   return (
     <main>
       <h1 data-testid="app-title">Diet Companion</h1>
-      {dishScreen ? (
+      {targetsOpen ? (
+        <TargetsScreen
+          api={targetsApi}
+          onBack={() => setTargetsOpen(false)}
+          onUnauthorized={() => {
+            clearSignedIn(storage);
+            setTargetsOpen(false);
+            setDishScreen(null);
+            setScreen({ name: "login", error: null });
+          }}
+        />
+      ) : dishScreen ? (
         <DishScreens
           screen={dishScreen}
           onFilter={(text) => setDishScreen((s) => (s && s.name === "dishes" ? { ...s, filter: text } : s))}
@@ -822,10 +841,15 @@ export function App(props: AppProps = {}) {
           onCancelEdit={(product) => setScreen({ name: "product", product, confirmDelete: false })}
         />
       )}
-      {!dishScreen && screen.name === "add" ? (
-        <button type="button" className="big-button" data-testid="open-dishes" onClick={() => void openDishes()}>
-          Dishes
-        </button>
+      {!targetsOpen && !dishScreen && screen.name === "add" ? (
+        <>
+          <button type="button" className="big-button" data-testid="open-dishes" onClick={() => void openDishes()}>
+            Dishes
+          </button>
+          <button type="button" className="big-button" data-testid="open-targets" onClick={() => setTargetsOpen(true)}>
+            Daily targets
+          </button>
+        </>
       ) : null}
       {signedIn ? (
         <button type="button" className="link-button" onClick={() => void logout()}>
