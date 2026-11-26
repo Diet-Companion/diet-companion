@@ -69,7 +69,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: eac0698854c0a09a4402b20d52f7c8fb52d5067b
+  STAFF_SHA: 9eafcef7933265667a710cb9aea68f1f636158a7
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
