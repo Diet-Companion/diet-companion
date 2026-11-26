@@ -5,6 +5,9 @@ import { createAuth, type AuthDeps } from "./auth/auth.js";
 import type { DishStore } from "./dish-store.js";
 import { registerDishRoutes } from "./dishes.js";
 import { InMemoryDishStore } from "./in-memory-dish-store.js";
+import { InMemoryPlanStore } from "./in-memory-plan-store.js";
+import { registerPlanRoutes } from "./plan.js";
+import type { PlanStore } from "./plan-store.js";
 import {
   InMemoryProductStore,
   MAX_PHOTO_BYTES,
@@ -33,6 +36,8 @@ export interface AppOptions extends Partial<ProductRouteDeps> {
   dishStore?: DishStore;
   /** The target range storage seam (IF-001@1.4.0). Default: an in-memory store. */
   targetStore?: TargetStore;
+  /** The day plan storage seam (IF-001@1.5.0 plan routes). Default: an in-memory store. */
+  planStore?: PlanStore;
   /**
    * The Owner's IANA time zone (ADR-016). The production entry always passes the parsed OWNER_TIME_ZONE;
    * the UTC default is for tests that do not care about the day boundary.
@@ -93,18 +98,29 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     isOwner,
     clock: options.clock,
   });
+  const dishes = options.dishStore ?? new InMemoryDishStore(randomUUID);
   registerDishRoutes(app, {
-    dishes: options.dishStore ?? new InMemoryDishStore(randomUUID),
+    dishes,
     products,
     isOwner,
     clock: options.clock,
   });
+  const timeZone = options.timeZone ?? "UTC";
   // IF-001@1.4.0 target range operations.
   registerTargetRoutes(app, {
     targets: options.targetStore ?? new InMemoryTargetStore(),
     isOwner,
     clock: options.clock,
-    timeZone: options.timeZone ?? "UTC",
+    timeZone,
+  });
+  // IF-001@1.5.0 day plan operations.
+  registerPlanRoutes(app, {
+    plans: options.planStore ?? new InMemoryPlanStore(randomUUID),
+    products,
+    dishes,
+    isOwner,
+    clock: options.clock,
+    timeZone,
   });
 
   return app;
