@@ -139,6 +139,9 @@ jobs:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Actions runs steps with bash -e. Turn it off, so the check's exit code 1 (blocked or unsigned)
+          # still reaches the status, the summary and the label below.
+          set +e
           set -uo pipefail
           python -m pip install -q --no-deps --only-binary ':all:' -r staff/harness/requirements.txt || exit 1
           work="$RUNNER_TEMP/diff"; mkdir -p "$work"
