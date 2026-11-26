@@ -24,7 +24,11 @@ jobs:
           case "$HEAD_REF" in
             agent/analyst/*)            allow='^(requirements/[^/]+/REQ-[0-9]+(\.tc\.[a-z0-9]+|\.md)$)' ;;
             agent/knowledge-drafting/*) allow='^knowledge/(rules/[^/]+/R-[0-9]+\.md|product-core\.md|discovered/.+)$' ;;
-            agent/*)                    echo "::error::Unknown agent branch prefix '$HEAD_REF'; failing closed (S-ARCH-003)."; exit 1 ;;
+            # Developer (S-DEV-005): the union of .staff/code.yml's globs for area `system`. Never
+            # .github/, .staff/, architecture/, requirements/, knowledge/, AGENTS.md or tests/ (QA).
+            # Which of these files need a sign-off is staff/diff-check's job (S-DEV-018).
+            agent/developer/*)          allow='^((client|backend|label-reader)/.+|package\.json|package-lock\.json|tsconfig\.base\.json|vitest\.config\.ts|vitest\.workspace\.ts|eslint\.config\.js|\.prettierrc\.json|playwright\.config\.ts)$' ;;
+            agent/*)                   echo "::error::Unknown agent branch prefix '$HEAD_REF'; failing closed (S-ARCH-003)."; exit 1 ;;
             *)                          echo "Human branch '$HEAD_REF': no agent scope applies."; exit 0 ;;
           esac
           if [ "$HEAD_REPO" != "$REPO" ]; then echo "::error::Agent branches must live in $REPO."; exit 1; fi
