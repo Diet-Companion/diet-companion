@@ -26,7 +26,7 @@ permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016).
-  STAFF_SHA: 6e0ee5b679ca14c52bbc014db747c7be03147b08
+  STAFF_SHA: 74d63f5f758a3f8663ed69d3c4ab567e3ca2e9e4
   STAFF_REPO: Diet-Companion/staff
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
   STATUS_CONTEXT: staff/contract-check
