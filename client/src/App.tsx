@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
 import { createDishApi, type Dish, type DishState } from "./dishApi";
 import { DishScreens } from "./DishViews";
+import { PlanScreen } from "./PlanScreen";
+import { createPlanApi } from "./planApi";
 import { TargetsScreen } from "./TargetsScreen";
 import { TargetsSetupView } from "./TargetsSetupView";
 import { CHECKING, OPEN, gateAfterRanges, gateAfterSave, saveNutrient, setField, withResult, type TargetsGate } from "./targets";
@@ -531,11 +533,22 @@ export function App(props: AppProps = {}) {
     () => createTargetsApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
     [props.fetchFn, props.newRunId],
   );
+  const planDeps = useMemo(
+    () => ({
+      plan: createPlanApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
+      targets: targetsApi,
+      products: api,
+      dishes: dishApi,
+    }),
+    [props.fetchFn, props.newRunId, api, dishApi, targetsApi],
+  );
   const [screen, setScreen] = useState<Screen>(() => initialScreen(storage));
   // The dish screens sit on top of the product screens; null means the product screens show.
   const [dishScreen, setDishScreen] = useState<DishScreen | null>(null);
   // The targets screen (change ranges) sits on top of the other screens while it is open.
   const [targetsOpen, setTargetsOpen] = useState(false);
+  // The plan screen (REQ-013) sits on top of the other screens while it is open.
+  const [planOpen, setPlanOpen] = useState(false);
   // Until all three target ranges are saved, only the targets setup shows (REQ-009/AC-001).
   const [gate, setGate] = useState<TargetsGate>(
     () => props.initialGate ?? (initialScreen(storage).name === "login" ? OPEN : CHECKING),
@@ -747,6 +760,7 @@ export function App(props: AppProps = {}) {
     clearSignedIn(storage);
     setDishScreen(null);
     setTargetsOpen(false);
+    setPlanOpen(false);
     setGate(OPEN);
     setScreen({ name: "login", error: null });
   }
@@ -796,6 +810,17 @@ export function App(props: AppProps = {}) {
             setScreen({ name: "login", error: null });
           }}
         />
+      ) : planOpen ? (
+        <PlanScreen
+          deps={planDeps}
+          onBack={() => setPlanOpen(false)}
+          onUnauthorized={() => {
+            clearSignedIn(storage);
+            setPlanOpen(false);
+            setDishScreen(null);
+            setScreen({ name: "login", error: null });
+          }}
+        />
       ) : dishScreen ? (
         <DishScreens
           screen={dishScreen}
@@ -841,10 +866,13 @@ export function App(props: AppProps = {}) {
           onCancelEdit={(product) => setScreen({ name: "product", product, confirmDelete: false })}
         />
       )}
-      {!targetsOpen && !dishScreen && screen.name === "add" ? (
+      {!targetsOpen && !planOpen && !dishScreen && screen.name === "add" ? (
         <>
           <button type="button" className="big-button" data-testid="open-dishes" onClick={() => void openDishes()}>
             Dishes
+          </button>
+          <button type="button" className="big-button" data-testid="open-plan" onClick={() => setPlanOpen(true)}>
+            Daily plan
           </button>
           <button type="button" className="big-button" data-testid="open-targets" onClick={() => setTargetsOpen(true)}>
             Daily targets
