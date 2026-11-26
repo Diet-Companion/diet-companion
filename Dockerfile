@@ -19,6 +19,7 @@ COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules node_modules
 COPY --from=build /app/label-reader/package.json label-reader/
 COPY --from=build /app/label-reader/dist label-reader/dist
+COPY --from=build /app/label-reader/fixtures label-reader/fixtures
 COPY --from=build /app/backend/package.json backend/
 COPY --from=build /app/backend/dist backend/dist
 COPY --from=build /app/backend/migrations backend/migrations
