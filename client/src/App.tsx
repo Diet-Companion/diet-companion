@@ -1,7 +1,10 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createApi, type FetchLike, type MissingField, type NewProduct, type Product, type Recognised } from "./api";
 import { createDishApi, type Dish, type DishState } from "./dishApi";
 import { DishScreens } from "./DishViews";
+import { TargetsSetupView } from "./TargetsSetupView";
+import { CHECKING, OPEN, gateAfterRanges, gateAfterSave, saveNutrient, setField, withResult, type TargetsGate } from "./targets";
+import { createTargetsApi, type Nutrient } from "./targetsApi";
 import {
   buildCreate,
   buildEdit,
@@ -521,9 +524,15 @@ export function App(props: AppProps = {}) {
     () => createDishApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
     [props.fetchFn, props.newRunId],
   );
+  const targetsApi = useMemo(
+    () => createTargetsApi(props.fetchFn ?? defaultFetch, props.newRunId ?? defaultRunId),
+    [props.fetchFn, props.newRunId],
+  );
   const [screen, setScreen] = useState<Screen>(() => initialScreen(storage));
   // The dish screens sit on top of the product screens; null means the product screens show.
   const [dishScreen, setDishScreen] = useState<DishScreen | null>(null);
+  // Until all three target ranges are saved, only the targets setup shows (REQ-009/AC-001).
+  const [gate, setGate] = useState<TargetsGate>(() => (initialScreen(storage).name === "login" ? OPEN : CHECKING));
   const signedIn = screen.name !== "login";
 
   async function apply(pending: ReturnType<typeof api.createProduct>) {
@@ -687,11 +696,40 @@ export function App(props: AppProps = {}) {
     await applyFormOutcome(writeOutcome(result, sent, original !== null), form, values);
   }
 
+  // Read whether setup is complete; the gate keeps everything else closed until it is.
+  async function checkTargets() {
+    setGate(CHECKING);
+    const result = await targetsApi.getTargetRanges();
+    if (result.kind === "unauthorized") {
+      clearSignedIn(storage);
+      setScreen({ name: "login", error: null });
+    }
+    setGate(gateAfterRanges(result));
+  }
+
+  async function saveTarget(nutrient: Nutrient) {
+    if (gate.phase !== "setup") return;
+    const result = await saveNutrient(targetsApi, nutrient, gate.state.fields[nutrient]);
+    if (result.unauthorized) {
+      clearSignedIn(storage);
+      setGate(OPEN);
+      setScreen({ name: "login", error: null });
+      return;
+    }
+    setGate((g) => (g.phase === "setup" ? gateAfterSave(withResult(g.state, nutrient, result)) : g));
+  }
+
+  useEffect(() => {
+    if (gate.phase === "checking") void checkTargets();
+  }, []);
+
   async function login(password: string) {
     const result = await api.loginOwner(password);
     if (result.kind === "ok") {
       markSignedIn(storage);
+      setGate(CHECKING);
       setScreen({ name: "add" });
+      await checkTargets();
     } else {
       setScreen({ name: "login", error: result.message ?? "Could not log in. Try again." });
     }
@@ -701,7 +739,39 @@ export function App(props: AppProps = {}) {
     await api.logout();
     clearSignedIn(storage);
     setDishScreen(null);
+    setGate(OPEN);
     setScreen({ name: "login", error: null });
+  }
+
+  if (gate.phase !== "open") {
+    return (
+      <main>
+        <h1 data-testid="app-title">Diet Companion</h1>
+        {gate.phase === "setup" ? (
+          <TargetsSetupView
+            state={gate.state}
+            onChange={(n, which, value) =>
+              setGate((g) => (g.phase === "setup" ? { ...g, state: setField(g.state, n, which, value) } : g))
+            }
+            onSave={(n) => void saveTarget(n)}
+          />
+        ) : gate.phase === "failed" ? (
+          <section data-testid="targets-check-failed">
+            <p role="alert">Your targets could not be checked. Try again.</p>
+            <button type="button" onClick={() => void checkTargets()}>
+              Try again
+            </button>
+          </section>
+        ) : (
+          <p role="status" data-testid="targets-checking">
+            Working on it...
+          </p>
+        )}
+        <button type="button" className="link-button" onClick={() => void logout()}>
+          Log out
+        </button>
+      </main>
+    );
   }
 
   return (
