@@ -37,6 +37,8 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/app/diet-companion:${{ github.sha }}
   SQL_INSTANCE: ${{ vars.GCP_PROJECT_ID }}:${{ vars.GCP_REGION }}:diet-companion-db
+  # What "today" is for the app (ADR-016): one IANA zone, the day starting at local midnight.
+  OWNER_TIME_ZONE: Europe/Rome
 
 jobs:
   build:
@@ -99,7 +101,7 @@ jobs:
           set -euo pipefail
           gcloud run jobs deploy migrate --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
             --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-secrets DATABASE_URL=database-url:latest \
+            --set-secrets DATABASE_URL=database-url:latest --update-env-vars OWNER_TIME_ZONE="$OWNER_TIME_ZONE" \
             --command node --args backend/dist/migrate.js \
             --max-retries 0 --task-timeout 300s --execute-now --wait --quiet
 
@@ -111,6 +113,7 @@ jobs:
           gcloud run deploy diet-companion --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
             --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
             --set-secrets DATABASE_URL=database-url:latest,OWNER_PASSWORD_HASH=owner-password-hash:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest \
+            --update-env-vars OWNER_TIME_ZONE="$OWNER_TIME_ZONE" \
             --allow-unauthenticated --min-instances 0 --max-instances 1 --memory 512Mi --cpu 1 \
             --quiet
           url=$(gcloud run services describe diet-companion --project "$PROJECT" --region "$REGION" --format='value(status.url)')
