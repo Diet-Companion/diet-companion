@@ -1,0 +1,1874 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "catalog-api",
+    "version": "1.4.0",
+    "description": "Catalog operations and Owner sign-in for the single Owner. Access control is password login with a server-side session per ADR-004 option d. Nutrient values are per 100 g."
+  },
+  "security": [
+    {
+      "ownerSession": []
+    }
+  ],
+  "paths": {
+    "/products/label-photo": {
+      "post": {
+        "operationId": "addProductFromLabelPhoto",
+        "summary": "Recognise a label photo and save the product when all required values are known. The photo is never stored by the app.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "photo"
+                ],
+                "properties": {
+                  "photo": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Label photo, held in memory for this request only."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Saved with source label.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error photo.unreadable. The photo cannot be processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Error product.duplicate_name_shop. A selectable product has the same name and shop (R-003). Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error product.values_missing. One or more of name, shop, calories, protein, fat were not recognised. Nothing is saved. The body lists the missing fields and the recognised values so the client can call createProduct.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValuesMissing"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Error recognition.unavailable. The recognition provider failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products": {
+      "get": {
+        "operationId": "listProducts",
+        "summary": "List products, ordered by name then shop ignoring letter case, not paginated. With state selectable (the default) it returns the products that can be chosen for new plans and log entries: not soft-deleted and not replaced by a newer version (R-004, R-006). With state deleted it returns the soft-deleted products so they can be restored. Replaced versions are never listed; read one with getProduct.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "selectable",
+                "deleted"
+              ],
+              "default": "selectable"
+            },
+            "description": "Which products to list."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The products.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Product"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProduct",
+        "summary": "Save a product from supplied values, including a product added by hand (source manual). Enforces R-002 and R-003.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewProduct"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error product.value_invalid. A supplied numeric value is negative. Nothing is saved. The body lists the offending fields. A value of 0 is not an error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueInvalid"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Error product.duplicate_name_shop (R-003).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error product.values_missing (R-002).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValuesMissing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{id}": {
+      "get": {
+        "operationId": "getProduct",
+        "summary": "Read one product by id in any state: selectable, replaced by a newer version, or soft-deleted. Past records use this to show the product they were made with (R-004, R-006). A product is never removed and its id is never reused.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The product.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "editProduct",
+        "summary": "Edit a selectable product. A change to any of calories, protein, fat, carbohydrate, sugars, fibre, salt or piece_weight records a new product with the edited values and leaves the old one unchanged and no longer selectable (R-004); the response is 201, versioned true, and product.id is the new id. A change to only name, brand, shop, portion_size or portion_calories is applied in place (R-005); the response is 200, versioned false, same id. A request that changes no value records nothing and returns 200 with versioned false. A change that would give two selectable products the same name and shop, ignoring letter case and extra spaces, is refused and nothing is saved (R-003).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edited in place, or nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditProductResult"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A new product was recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditProductResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error product.value_invalid when a supplied numeric value is negative, with the offending fields; or error request.invalid when the body is empty or names a field that cannot be edited. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValueInvalid"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Error product.duplicate_name_shop (R-003), or error product.not_selectable when the product is soft-deleted or already replaced by a newer version. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error product.values_missing (R-002). A required value was set to null or blank.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValuesMissing"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteProduct",
+        "summary": "Soft-delete a product (R-006). It stays readable by id and in past records, and is no longer selectable. Deleting a product that is already soft-deleted returns it unchanged.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The product with deleted true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Error product.not_selectable. The product was replaced by a newer version. Nothing is changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/products/{id}/restore": {
+      "post": {
+        "operationId": "restoreProduct",
+        "summary": "Restore a soft-deleted product with its values unchanged (R-006). Past records are unchanged. Restoring a product that is already selectable returns it unchanged.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/ProductId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The product with deleted false.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Error product.duplicate_name_shop when a selectable product has the same name and shop (R-003, R-006); the product stays soft-deleted. Error product.not_selectable when the product was replaced by a newer version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dishes": {
+      "get": {
+        "operationId": "listDishes",
+        "summary": "List dishes, ordered by name ignoring letter case, then by id, not paginated. With state selectable (the default) it returns the dishes that can be chosen for new plans and log entries: not soft-deleted and not replaced by a newer version (R-008, R-010). With state deleted it returns the soft-deleted dishes so they can be restored. Replaced versions are never listed; read one with getDish.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "selectable",
+                "deleted"
+              ],
+              "default": "selectable"
+            },
+            "description": "Which dishes to list."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dishes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Dish"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createDish",
+        "summary": "Save a dish with a name and at least one line (R-007). Each line is a product id with grams or with pieces. Pieces are accepted only for a product with a piece weight. Every product must be selectable (ADR-014). Duplicate dish names are allowed (R-010). Nothing is saved when any check fails.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewDish"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dish"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error dish.line_invalid. One or more lines are refused; the body lists each by index with a reason. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DishLineInvalid"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "description": "Error dish.values_missing. The name is missing or blank, or there is no line. The body lists what is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DishValuesMissing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dishes/{id}": {
+      "get": {
+        "operationId": "getDish",
+        "summary": "Read one dish by id in any state: selectable, replaced by a newer version, or soft-deleted. Past plans and log entries use this to show the dish they were made with (R-008, R-010). A dish is never removed and its id is never reused. Each line shows its product by the exact product id saved, in whatever state (R-009), and the weight of the line.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/DishId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dish.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dish"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/DishNotFound"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "editDish",
+        "summary": "Edit a selectable dish. A change to lines (products, amounts or their order) records a new dish with the given lines and leaves the old one unchanged and no longer selectable (R-008); the response is 201, versioned true, and dish.id is the new id. A change to only the name is applied in place (ADR-013 option a); the response is 200, versioned false, same id. A request that changes nothing records nothing and returns 200 with versioned false. A new line or a line with a changed product must reference a selectable product; a line whose product id is already in the dish is carried over without that check (ADR-014 option a).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/DishId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DishUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edited in place, or nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDishResult"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A new dish was recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditDishResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error dish.line_invalid, with the refused lines; or error request.invalid when the body is empty or names a field that cannot be edited. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DishLineInvalid"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/DishNotFound"
+          },
+          "409": {
+            "description": "Error dish.not_selectable. The dish is soft-deleted or already replaced by a newer version. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error dish.values_missing. The name was set to blank or the lines were set to none.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DishValuesMissing"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteDish",
+        "summary": "Soft-delete a dish (R-010). It stays readable by id and in past records, and is no longer selectable. Deleting a dish that is already soft-deleted returns it unchanged.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/DishId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dish with deleted true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dish"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/DishNotFound"
+          },
+          "409": {
+            "description": "Error dish.not_selectable. The dish was replaced by a newer version. Nothing is changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dishes/{id}/restore": {
+      "post": {
+        "operationId": "restoreDish",
+        "summary": "Restore a soft-deleted dish with its lines unchanged (R-010). Past records are unchanged. Restoring a dish that is already selectable returns it unchanged.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/DishId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dish with deleted false.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dish"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/DishNotFound"
+          },
+          "409": {
+            "description": "Error dish.not_selectable. The dish was replaced by a newer version. Nothing is changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/target-ranges": {
+      "get": {
+        "operationId": "getTargetRanges",
+        "summary": "Read the daily target ranges in force today for calories, protein and fat, and whether setup is complete. A nutrient with no range yet is null. Today is the date of the server clock in the Owner time zone (ADR-016). While setup_complete is false the client shows the first-use setup before anything else (REQ-009/AC-001).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The ranges in force today.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetRanges"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/target-ranges/on/{date}": {
+      "get": {
+        "operationId": "getTargetRangesOn",
+        "summary": "Read the ranges in force on a calendar date, for the journal: for each nutrient, the range with the latest effective date on or before that date, or null when none had been saved by then. A change saved on day D applies from D, so the answer for D and later dates changes and the answer for earlier dates does not (REQ-009/AC-005, AC-006). A date after today answers like today, because no future-dated change exists. The answer follows later saves and does not freeze a closed day: closing a day must store the ranges it used (ADR-015/C-004, REQ-009/AC-011).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/TargetDate"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The ranges in force on the date. as_of is that date.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetRanges"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error request.invalid. The date is not a valid calendar date.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/target-ranges/{nutrient}": {
+      "put": {
+        "operationId": "setTargetRange",
+        "summary": "Set or change the range of one nutrient, effective from today in the Owner time zone (ADR-016). Today and later days use the new range; earlier days keep theirs (REQ-009/AC-005, AC-006). The three ranges are saved one at a time. Both limits are required, each a whole number from 0 upward, and the minimum may not be above the maximum; equal is allowed (R-011). When a save is refused nothing is saved and the previous range stays in force. The effective date is always today: any date or weekday field in the body is ignored, so no day-specific range can be set (REQ-009/AC-007). Only calories, protein and fat can be set (REQ-009/AC-008).",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "$ref": "#/components/parameters/TargetNutrient"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetRangeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved. The range is in force from effective_from, which is today.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetRange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error target.value_invalid when a limit is negative, not a whole number or above the supported maximum, or error target.range_inverted when the minimum is above the maximum. The body lists the offending limits in invalid. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetValueInvalid"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Error target.nutrient_unknown. Only calories, protein and fat have a range. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error target.values_missing. The minimum or the maximum is missing or null. The body lists what is missing. Nothing is saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetValuesMissing"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readiness": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Report whether the backend, its database and the label reader are reachable. Used by test and deployment checks.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error not.ready. At least one dependency is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "loginOwner",
+        "summary": "Sign in with the Owner password. On success a session row is created and the owner_session cookie is set (ADR-004/C-007). Failed attempts are throttled (ADR-004/C-008).",
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Signed in. Set-Cookie owner_session (HttpOnly, Secure, SameSite=Strict)."
+          },
+          "401": {
+            "description": "Error auth.failed. The password is wrong. The response is the same whatever the cause.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error auth.throttled. Too many failed attempts; try again later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "End the Owner session, delete its session row and clear the cookie.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RunId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Signed out."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ownerSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "owner_session",
+        "description": "Opaque session id in an HttpOnly Secure SameSite=Strict cookie, issued by loginOwner after a correct password and checked against a session row with an expiry (ADR-004)."
+      }
+    },
+    "parameters": {
+      "RunId": {
+        "name": "X-Run-Id",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Correlation id echoed in logs and responses."
+      },
+      "ProductId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Product id. Every version of a product has its own id, which never changes and is never reused."
+      },
+      "DishId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Dish id. Every version of a dish has its own id, which never changes and is never reused."
+      },
+      "TargetNutrient": {
+        "name": "nutrient",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "calories",
+            "protein",
+            "fat"
+          ]
+        },
+        "description": "The nutrient whose range is set. Any other value is answered with target.nutrient_unknown."
+      },
+      "TargetDate": {
+        "name": "date",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "date"
+        },
+        "description": "A calendar date, YYYY-MM-DD, in the Owner time zone (ADR-016)."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Error auth.required. No valid Owner session.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Error product.not_found. No product has this id.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "DishNotFound": {
+        "description": "Error dish.not_found. No dish has this id.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "writeOnly": true,
+            "description": "The Owner password. Never logged or returned."
+          }
+        }
+      },
+      "NewProduct": {
+        "type": "object",
+        "required": [
+          "name",
+          "shop",
+          "calories",
+          "protein",
+          "fat",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "shop": {
+            "type": "string",
+            "minLength": 1
+          },
+          "calories": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "kcal",
+            "description": "Per 100 g."
+          },
+          "protein": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "fat": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "brand": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "label",
+              "lookup",
+              "manual"
+            ]
+          },
+          "carbohydrate": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional. Per 100 g. A 100 ml label value is sent as the same number (100 ml = 100 g)."
+          },
+          "sugars": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional. Per 100 g."
+          },
+          "fibre": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional. Per 100 g."
+          },
+          "salt": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional. Per 100 g. Sodium is computed from it (R-001)."
+          },
+          "portion_size": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional portion example size. Independent of portion_calories; either may be given alone. 0 is stored as empty."
+          },
+          "portion_calories": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "kcal",
+            "description": "Optional. Calories of the portion example. Independent of portion_size; either may be given alone. 0 is stored as empty."
+          },
+          "piece_weight": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Optional average weight of one piece. When present and above 0 the product is counted by the piece (R-003). 0 is stored as empty, so the product is not counted by the piece."
+          }
+        }
+      },
+      "ProductUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "description": "Fields to change; omitted fields keep their value. Optional fields accept null to clear them. Required fields (name, shop, calories, protein, fat) cannot be null or blank. The source cannot be edited.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "shop": {
+            "type": "string"
+          },
+          "brand": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "calories": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "kcal",
+            "description": "Per 100 g."
+          },
+          "protein": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "fat": {
+            "type": "number",
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "carbohydrate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "sugars": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "fibre": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "salt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Per 100 g."
+          },
+          "portion_size": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Portion example size. 0 is stored as empty."
+          },
+          "portion_calories": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "kcal",
+            "description": "Calories of the portion example. 0 is stored as empty."
+          },
+          "piece_weight": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "x-unit": "g",
+            "description": "Average weight of one piece. 0 is stored as empty."
+          }
+        }
+      },
+      "Product": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/NewProduct"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "sodium",
+              "counted_by_piece",
+              "replaced_by",
+              "deleted",
+              "selectable"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "sodium": {
+                "type": "number",
+                "readOnly": true,
+                "minimum": 0,
+                "x-unit": "mg",
+                "description": "Per 100 g. Computed on read as salt x 400; 0 when salt is empty (R-001). Never entered; a value sent in a request is ignored."
+              },
+              "counted_by_piece": {
+                "type": "boolean",
+                "readOnly": true,
+                "description": "True when a piece weight is stored (R-003). Derived, never stored; a value sent in a request is ignored."
+              },
+              "replaced_by": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "readOnly": true,
+                "description": "Id of the newer version that replaced this product after a nutrient edit (R-004), or null. A product with a value here is never selectable and never changes again."
+              },
+              "deleted": {
+                "type": "boolean",
+                "readOnly": true,
+                "description": "True when the product is soft-deleted (R-006)."
+              },
+              "selectable": {
+                "type": "boolean",
+                "readOnly": true,
+                "description": "True when the product is neither soft-deleted nor replaced, so it can be chosen for new plans and log entries. Derived, never stored."
+              }
+            }
+          }
+        ]
+      },
+      "EditProductResult": {
+        "type": "object",
+        "required": [
+          "product",
+          "versioned",
+          "replaced_id"
+        ],
+        "properties": {
+          "product": {
+            "$ref": "#/components/schemas/Product"
+          },
+          "versioned": {
+            "type": "boolean",
+            "description": "True when a new product was recorded; product.id is then the new id the client must use from now on."
+          },
+          "replaced_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the product that was replaced, or null when the edit was applied in place or changed nothing."
+          }
+        }
+      },
+      "DishLineInput": {
+        "type": "object",
+        "required": [
+          "product_id"
+        ],
+        "additionalProperties": false,
+        "description": "One line of a dish: a product id and exactly one amount, grams or pieces. The amount must be above 0. Pieces are accepted only for a product with a piece weight (R-007).",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "description": "The exact product id. It is kept as given and never changed to a newer version of the product (R-009)."
+          },
+          "grams": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "x-unit": "g",
+            "description": "Amount in grams."
+          },
+          "pieces": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "x-unit": "piece",
+            "description": "Amount in pieces. Weight is pieces times the product piece_weight."
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "grams"
+            ]
+          },
+          {
+            "required": [
+              "pieces"
+            ]
+          }
+        ]
+      },
+      "NewDish": {
+        "type": "object",
+        "required": [
+          "name",
+          "lines"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Dish name. Duplicates are allowed (R-010)."
+          },
+          "lines": {
+            "type": "array",
+            "description": "The lines in display order. At least one is required; an empty list is answered with dish.values_missing.",
+            "items": {
+              "$ref": "#/components/schemas/DishLineInput"
+            }
+          }
+        }
+      },
+      "DishUpdate": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "description": "Fields to change; omitted fields keep their value. When lines is given it replaces all lines of the dish.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "New name. Cannot be blank."
+          },
+          "lines": {
+            "type": "array",
+            "description": "The full new list of lines in display order. Cannot be empty.",
+            "items": {
+              "$ref": "#/components/schemas/DishLineInput"
+            }
+          }
+        }
+      },
+      "DishLine": {
+        "type": "object",
+        "required": [
+          "position",
+          "product",
+          "grams",
+          "pieces",
+          "weight_grams"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based display order."
+          },
+          "product": {
+            "$ref": "#/components/schemas/Product"
+          },
+          "grams": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "g",
+            "description": "The saved amount when given in grams, otherwise null."
+          },
+          "pieces": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "x-unit": "piece",
+            "description": "The saved amount when given in pieces, otherwise null."
+          },
+          "weight_grams": {
+            "type": "number",
+            "readOnly": true,
+            "x-unit": "g",
+            "description": "Grams as saved, or pieces times the piece_weight of this exact product id (REQ-006/AC-002). Computed on read, never stored."
+          }
+        }
+      },
+      "Dish": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "lines",
+          "total_weight_grams",
+          "replaced_by",
+          "deleted",
+          "selectable",
+          "has_unselectable_product"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DishLine"
+            }
+          },
+          "total_weight_grams": {
+            "type": "number",
+            "readOnly": true,
+            "x-unit": "g",
+            "description": "Sum of the line weights. Computed on read."
+          },
+          "replaced_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true,
+            "description": "Id of the newer version that replaced this dish after an edit of lines (R-008), or null. A dish with a value here is never selectable and its lines never change again."
+          },
+          "deleted": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "True when the dish is soft-deleted (R-010)."
+          },
+          "selectable": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "True when the dish is neither soft-deleted nor replaced, so it can be chosen for new plans and log entries. Derived, never stored."
+          },
+          "has_unselectable_product": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "True when at least one line product is replaced or soft-deleted (R-009). The line keeps that exact product. Derived, never stored."
+          }
+        }
+      },
+      "EditDishResult": {
+        "type": "object",
+        "required": [
+          "dish",
+          "versioned",
+          "replaced_id"
+        ],
+        "properties": {
+          "dish": {
+            "$ref": "#/components/schemas/Dish"
+          },
+          "versioned": {
+            "type": "boolean",
+            "description": "True when a new dish was recorded; dish.id is then the new id the client must use from now on."
+          },
+          "replaced_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id of the dish that was replaced, or null when the edit was applied in place or changed nothing."
+          }
+        }
+      },
+      "TargetRangeInput": {
+        "type": "object",
+        "description": "The new range of one nutrient. Both limits are needed to save; a missing or null limit is answered with target.values_missing. Fields other than minimum and maximum are ignored.",
+        "properties": {
+          "minimum": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 2147483647,
+            "x-unit": "kcal for calories, g for protein and fat",
+            "description": "Lowest accepted daily total, inclusive. A whole number from 0 upward. A negative or fractional value is answered with target.value_invalid."
+          },
+          "maximum": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 2147483647,
+            "x-unit": "kcal for calories, g for protein and fat",
+            "description": "Highest accepted daily total, inclusive. A whole number from 0 upward, not below the minimum. Equal to the minimum is allowed."
+          }
+        }
+      },
+      "TargetRange": {
+        "type": "object",
+        "required": [
+          "nutrient",
+          "minimum",
+          "maximum",
+          "unit",
+          "effective_from"
+        ],
+        "properties": {
+          "nutrient": {
+            "type": "string",
+            "enum": [
+              "calories",
+              "protein",
+              "fat"
+            ]
+          },
+          "minimum": {
+            "type": "integer",
+            "minimum": 0,
+            "x-unit": "kcal for calories, g for protein and fat",
+            "description": "Lowest accepted daily total, inclusive."
+          },
+          "maximum": {
+            "type": "integer",
+            "minimum": 0,
+            "x-unit": "kcal for calories, g for protein and fat",
+            "description": "Highest accepted daily total, inclusive."
+          },
+          "unit": {
+            "type": "string",
+            "readOnly": true,
+            "enum": [
+              "kcal",
+              "g"
+            ],
+            "description": "kcal for calories, g for protein and fat."
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date",
+            "readOnly": true,
+            "description": "The calendar date from which this range applies, in the Owner time zone. Set by the server to the day of the save; never sent."
+          }
+        }
+      },
+      "TargetRanges": {
+        "type": "object",
+        "required": [
+          "as_of",
+          "setup_complete",
+          "calories",
+          "protein",
+          "fat"
+        ],
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date",
+            "readOnly": true,
+            "description": "The date the ranges are in force on: today for getTargetRanges, the requested date for getTargetRangesOn."
+          },
+          "setup_complete": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "True when calories, protein and fat each have a range in force on as_of."
+          },
+          "calories": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TargetRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The calories range, or null when none was saved by as_of."
+          },
+          "protein": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TargetRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The protein range, or null when none was saved by as_of."
+          },
+          "fat": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TargetRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fat range, or null when none was saved by as_of."
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ValueInvalid": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "invalid"
+            ],
+            "properties": {
+              "invalid": {
+                "type": "array",
+                "description": "Fields whose supplied value is negative.",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "calories",
+                    "protein",
+                    "fat",
+                    "carbohydrate",
+                    "sugars",
+                    "fibre",
+                    "salt",
+                    "portion_size",
+                    "portion_calories",
+                    "piece_weight"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TargetValueInvalid": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "invalid"
+            ],
+            "properties": {
+              "invalid": {
+                "type": "array",
+                "description": "The limits that are refused. For target.range_inverted both minimum and maximum are listed.",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "minimum",
+                    "maximum"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "TargetValuesMissing": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "missing"
+            ],
+            "properties": {
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "minimum",
+                    "maximum"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ValuesMissing": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "missing"
+            ],
+            "properties": {
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "name",
+                    "shop",
+                    "calories",
+                    "protein",
+                    "fat"
+                  ]
+                }
+              },
+              "recognised": {
+                "type": "object",
+                "description": "Values recognised so far, per 100 g; the client resends them with the supplied ones to createProduct.",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "shop": {
+                    "type": "string"
+                  },
+                  "calories": {
+                    "type": "number",
+                    "x-unit": "kcal"
+                  },
+                  "protein": {
+                    "type": "number",
+                    "x-unit": "g"
+                  },
+                  "fat": {
+                    "type": "number",
+                    "x-unit": "g"
+                  },
+                  "brand": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "DishValuesMissing": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "missing"
+            ],
+            "properties": {
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "name",
+                    "lines"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "DishLineInvalid": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Error"
+          },
+          {
+            "type": "object",
+            "required": [
+              "lines"
+            ],
+            "properties": {
+              "lines": {
+                "type": "array",
+                "description": "The refused lines, by zero-based index in the request.",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "index",
+                    "reason"
+                  ],
+                  "properties": {
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "product_not_found",
+                        "product_not_selectable",
+                        "piece_without_weight",
+                        "amount_invalid"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "ready"
+        ],
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "database": {
+            "type": "boolean"
+          },
+          "label_reader": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
