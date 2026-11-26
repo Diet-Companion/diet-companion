@@ -76,22 +76,10 @@ jobs:
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      # Migrations first (S-DEVOPS-038), from the same image, as a Cloud Run job (ADR-008/C-002).
-      - name: Run the migrations
-        env:
-          RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
-        run: |
-          set -euo pipefail
-          gcloud run jobs deploy migrate --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
-            --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
-            --set-secrets DATABASE_URL=database-url:latest \
-            --command node --args backend/dist/migrate.js \
-            --max-retries 0 --task-timeout 300s --execute-now --wait --quiet
-
-      # A real-Claude smoke check before traffic moves (S-DEVOPS-035): this image reads one synthetic label
-      # (label-reader/fixtures/smoke-label.png) with the production key, as a Cloud Run job under the runtime
-      # account, so the key never reaches GitHub. A failure stops the deploy and the running revision stays.
-      # About one cent per deploy.
+      # A real-Claude smoke check before anything changes (S-DEVOPS-035): this image reads one synthetic
+      # label (label-reader/fixtures/smoke-label.png) with the production key, as a Cloud Run job under the
+      # runtime account, so the key never reaches GitHub. It runs before the migrations, so a failure stops
+      # the deploy with the database and the running revision untouched. About one cent per deploy.
       - name: Smoke-check the label reader against the real Claude API
         env:
           RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
@@ -102,6 +90,18 @@ jobs:
             --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
             --command node --args label-reader/dist/smoke-cli.js,label-reader/fixtures/smoke-label.png \
             --max-retries 0 --task-timeout 120s --execute-now --wait --quiet
+
+      # Migrations before the service (S-DEVOPS-038), from the same image, as a Cloud Run job (ADR-008/C-002).
+      - name: Run the migrations
+        env:
+          RUNTIME_SA: ${{ vars.GCP_RUNTIME_SA }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs deploy migrate --project "$PROJECT" --region "$REGION" --image "$IMAGE" \
+            --service-account "$RUNTIME_SA" --set-cloudsql-instances "$SQL_INSTANCE" \
+            --set-secrets DATABASE_URL=database-url:latest \
+            --command node --args backend/dist/migrate.js \
+            --max-retries 0 --task-timeout 300s --execute-now --wait --quiet
 
       - name: Deploy the service
         env:
