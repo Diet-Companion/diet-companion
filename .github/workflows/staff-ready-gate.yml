@@ -132,6 +132,9 @@ jobs:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # Actions runs steps with bash -e. Turn it off, so the gate's exit code 1 (not ready) still
+          # reaches the status below.
+          set +e
           set -uo pipefail
           python -m pip install -q --no-deps --only-binary ':all:' -r staff/harness/requirements.txt || exit 1
           work="$RUNNER_TEMP/gate"; mkdir -p "$work"
@@ -151,4 +154,6 @@ jobs:
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="$STATUS_CONTEXT" \
             -f description="${desc:0:140}" -f target_url="$RUN_URL" --silent
           echo "status $STATUS_CONTEXT: $state ($desc)"
-          exit "$rc"
+          # The verdict is the staff/ready-gate status, the required one. The job itself fails only on a
+          # harness error, so a run before the reviewer's result doesn't leave a stale red X on the PR.
+          [ "$rc" -le 1 ] || exit "$rc"
