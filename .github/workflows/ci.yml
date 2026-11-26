@@ -9,6 +9,12 @@
 #   integration  the same build, then `npm run test:integration` against a throwaway PostgreSQL
 #                service. Skipped by npm until the script exists (--if-present).
 #                Then `npm run test:api`, the API test layer (tests/api), against the same service.
+#   image        PRs only: builds the app image from the PR commit and pushes it to the `pr-builds`
+#                Artifact Registry repo, so every commit agents test has a build addressable by digest
+#                (S-TESTAB-003, decision 2026-11-25). The PR's code runs only inside `docker build`,
+#                before any credential exists in the job; GCP access comes after, through a Workload
+#                Identity pool that trusts only this repo's pull_request runs and a service account that
+#                can write to `pr-builds` and nothing else. Images are deleted after 14 days.
 #
 # A PR that changes no code (requirements, architecture, docs, staff config) still runs `unit` and
 # `integration`, because both are required checks, but they skip their steps and pass in seconds. The
@@ -146,3 +152,41 @@ jobs:
       - name: API tests (PostgreSQL, tests/api, S-QA-004)
         if: needs.changes.outputs.code == 'true'
         run: npm run test:api
+
+  image:
+    needs: changes
+    # PRs from this repo only: a fork's run gets no OIDC token. Not a required check.
+    if: >-
+      github.event_name == 'pull_request' && needs.changes.outputs.code == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write   # the OIDC token for the PR-builds Workload Identity pool, nothing else
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/pr-builds/diet-companion:pr-${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      # Before any credential: the PR's code runs only here, inside the build's containers.
+      - name: Build the image (no credentials yet)
+        run: docker build --pull=false -t "$IMAGE" .
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_PR_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PR_BUILDER_SA }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Push the image and record its digest
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker push "$IMAGE"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+          echo "Image for PR head ${HEAD_SHA::7}: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "$digest"
