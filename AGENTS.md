@@ -38,6 +38,21 @@ ADRs leave open. Where they differ, the accepted ADRs under `architecture/system
   fake. No test calls the real provider.
 - **Time, randomness and IDs** come through injected functions, so tests can fix them.
 
+## API tests (`tests/api/`, S-QA-004)
+
+- **What they test:** IF-001 behaviour through the real backend, in-process (`app.inject`), with the real stores
+  on PostgreSQL and the real Owner login. One file per feature, named `*.api.test.ts`. Run with `npm run test:api`
+  (needs `DATABASE_URL`; CI's integration job provides a throwaway database).
+- **Setup:** `startApi()` from `tests/api/support/api.ts` gives each file its own migrated schema and a synthetic
+  Owner password. Call `login()` first. Fake the label provider and the clock through `startApi({label, now})`;
+  never call the real provider.
+- **Data:** each test creates the data it needs (`newProduct()`) with unique names, and never relies on another
+  test's data or order.
+- **Assertions:** status codes, error `code`s and response fields as IF-001 names them. Never assert on message
+  wording.
+- **Citations:** every test cites its source, as unit tests do: `// cites: REQ-005/AC-001, R-004, IF-001@1.3.0#editProduct`.
+  Expected values come only from the cited AC, rule or spec, never from running the code.
+
 ## Secrets and data
 
 - **No secret** in code, tests or config. Runtime secrets (the provider key, the password hash, the

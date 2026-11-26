@@ -43,6 +43,36 @@ export function isDishSelectable(state: DishState): boolean {
 /** The dish was replaced by a newer version (IF-001@1.3.0 dish.not_selectable). */
 export class DishNotSelectableError extends Error {}
 
+/** The fields an edit may change (IF-001@1.3.0 DishUpdate). Omitted fields keep their value. */
+export interface DishChanges {
+  name?: string;
+  /** The full new list in display order; it replaces all lines. */
+  lines?: NewDishLine[];
+}
+
+/** What an edit did: the dish now current, whether a new version was recorded, and the id it replaced (R-008). */
+export interface DishEditOutcome {
+  record: DishRecord;
+  versioned: boolean;
+  replaced_id: string | null;
+}
+
+/** True when both lists hold the same products and amounts in the same order. */
+export function sameLines(a: readonly NewDishLine[], b: readonly NewDishLine[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((line, i) => {
+      const other = b[i];
+      return (
+        other !== undefined &&
+        line.product_id === other.product_id &&
+        line.grams === other.grams &&
+        line.pieces === other.pieces
+      );
+    })
+  );
+}
+
 /** Storage seam for dishes. Only CMP-002 reaches the database (ADR-003/C-002). */
 export interface DishStore {
   /**
@@ -60,8 +90,16 @@ export interface DishStore {
    */
   softDelete(id: string, at: Date): Promise<DishRecord | undefined>;
   /**
-   * Clears deleted_at, lines unchanged (R-010). Already selectable: returned unchanged. Undefined when the id is
-   * unknown. Throws DishNotSelectableError when the dish was replaced.
+   * Clears deleted_at, lines unchanged (R-010). Already selectable: returned unchanged. Undefined when the id is unknown.
+   * Throws DishNotSelectableError when the dish was replaced.
    */
   restore(id: string): Promise<DishRecord | undefined>;
+  /**
+   * Edits a selectable dish under a row lock (R-008, ADR-013 a). A name-only change updates in place. A change to
+   * lines, amounts or their order records a new dish (created at `at`) and sets replaced_by on the old one in the
+   * same transaction; the old dish and its lines are unchanged. No change records nothing. The caller has already
+   * checked the lines. Undefined when the id is unknown. Throws DishNotSelectableError when the dish was replaced
+   * or soft-deleted. Nothing is saved on a throw.
+   */
+  edit(id: string, changes: DishChanges, at: Date): Promise<DishEditOutcome | undefined>;
 }

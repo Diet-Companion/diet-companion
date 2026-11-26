@@ -65,3 +65,7 @@ areas:
       build: [npm run typecheck, npm run build]
       unit_test: npm test
       unit_report: reports/unit.xml
+      # The database tests (*.int.test.ts) against DATABASE_URL, a throwaway PostgreSQL. The eval runner
+      # runs them; the stage-1 work sandbox doesn't yet.
+      integration_test: npm run test:integration
+      integration_report: reports/integration.xml

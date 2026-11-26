@@ -4,6 +4,7 @@ import { createAnthropicLabelProvider } from "@diet-companion/label-reader";
 import pg from "pg";
 import { buildApp } from "./app.js";
 import { PostgresSessionStore, PostgresThrottleStore } from "./auth/postgres-auth-store.js";
+import { PostgresDishStore } from "./postgres-dish-store.js";
 import { PostgresProductStore } from "./postgres-store.js";
 import { parseServerConfig } from "./server-config.js";
 import { registerClient } from "./static.js";
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
 
   const app = buildApp({
     store: new PostgresProductStore(pool, randomUUID),
+    dishStore: new PostgresDishStore(pool, randomUUID),
     auth: {
       sessions: new PostgresSessionStore(pool),
       throttle: new PostgresThrottleStore(pool),
