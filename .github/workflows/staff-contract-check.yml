@@ -1,0 +1,161 @@
+# Staff PR contract check (S-DEV-010, S-DEV-027). No model.
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# Runs on every PR. It posts one commit status, `staff/contract-check`, on the PR head: make it required
+# in the ruleset. DEV agent PRs (head branch agent/developer/* or agent/dev-upkeep/*, or opened by the
+# engineering App) fail when:
+#   - the body doesn't open with the decision summary, or its PR block is missing or fails the schema;
+#   - the block's ticket isn't the branch's, or the diff touches more than one code-map area;
+#   - the diff changes more than 500 lines, not counting `generated` paths;
+#   - a declared AC or interface version fails the readiness rules (S-DEV-007);
+#   - a declared AC is neither cited by a test at the head nor listed in `untested_acs`;
+#   - a fix has no citing test and no not_unit_observable; or it is a drift PR (no conformance check yet).
+# Any other PR gets a passing status at once.
+#
+# Runs from the BASE branch (pull_request_target), so a PR can't change the check that gates it. The code
+# map, requirements and architecture come from the base commit. The PR head is fetched only as git data
+# and never executed. Writes: the status, and one summary comment when it fails (updated in place).
+name: staff-contract-check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions: {}
+
+env:
+  # Pinned staff commit (S-GEN-016).
+  STAFF_SHA: 6e0ee5b679ca14c52bbc014db747c7be03147b08
+  STAFF_REPO: Diet-Companion/staff
+  DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
+  STATUS_CONTEXT: staff/contract-check
+  MARKER: "<!-- staff-dev-contract-check:v1 -->"
+  PR: ${{ github.event.pull_request.number }}
+
+# The latest event per PR wins; an older run's status would be stale anyway.
+concurrency:
+  group: staff-contract-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  contract-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write   # the one summary comment
+      statuses: write
+    steps:
+      - name: Check out staff at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STAFF_REPO }}
+          ref: ${{ env.STAFF_SHA }}
+          path: staff
+          persist-credentials: false
+
+      - name: Resolve the PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          read -r head_sha base_sha head_repo state head_ref author < <(gh api "repos/$REPO/pulls/$PR" \
+            --jq '[.head.sha, .base.sha, .head.repo.full_name, .state, .head.ref, .user.login] | @tsv')
+          echo "$head_sha$base_sha" | grep -Eq '^[0-9a-f]{80}$' || { echo "::error::unexpected SHAs"; exit 1; }
+          [ "$state" = open ] || { echo "PR is not open; skipping."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          agent=false
+          case "$head_ref" in agent/developer/*|agent/dev-upkeep/*) agent=true ;; esac
+          [ "$author" = "$DEVELOPER_BOT_LOGIN" ] && agent=true
+          {
+            echo "run=true"
+            echo "agent=$agent"
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "fork=$([ "$head_repo" = "$REPO" ] && echo false || echo true)"
+            echo "head_ref=$head_ref"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Not a DEV agent PR
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=success -f context="$STATUS_CONTEXT" \
+            -f description="Not a DEV agent PR: the contract check applies to agent PRs only" --silent
+
+      - name: Fork PRs are not checked
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context="$STATUS_CONTEXT" \
+            -f description="An agent branch must live in this repo" --silent
+          exit 1
+
+      # Full history of the head, so the merge base and the base commit are reachable. Data only: nothing in it runs.
+      - name: Check out the PR head (data, never executed)
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        with:
+          python-version: "3.12"
+
+      - name: Run the check, post the status and the summary
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.agent == 'true' && steps.pr.outputs.fork == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Actions runs steps with bash -e. Turn it off, so the check's exit code 1 (a failed contract)
+          # still reaches the status and the summary below.
+          set +e
+          set -uo pipefail
+          python -m pip install -q --no-deps --only-binary ':all:' -r staff/harness/requirements.txt || exit 1
+          work="$RUNNER_TEMP/contract"; mkdir -p "$work"
+          export STAFF_REASON_FILE="$work/reason"
+          # The body as it is now: an edit to it reruns this check (the `edited` event).
+          gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' > "$work/body.md" || exit 1
+          desc=$(python staff/harness/dev_contract_check.py \
+            --repo head --base "$BASE_SHA" --head "$HEAD_SHA" --head-ref "$HEAD_REF" --repo-name "$REPO" \
+            --body "$work/body.md" --out "$work/result.json" --summary "$work/summary.md")
+          rc=$?
+          case "$rc" in
+            0) state=success ;;
+            1) state=failure ;;
+            *) state=error; desc="Contract check error: $(cat "$work/reason" 2>/dev/null || echo unknown)" ;;
+          esac
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="${desc:0:140}" -f target_url="$RUN_URL" --silent
+          echo "status $STATUS_CONTEXT: $state ($desc)"
+          if [ -s "$work/summary.md" ]; then
+            cat "$work/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            # One summary comment per PR, updated in place; posted only once the check has failed.
+            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\")))][0].id // empty" | head -n 1)
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$work/summary.md" --silent
+            elif [ "$rc" -eq 1 ]; then
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -F "body=@$work/summary.md" --silent
+            fi
+          fi
+          # The verdict is the staff/contract-check status, the required one. The job itself fails only on
+          # a harness error.
+          [ "$rc" -le 1 ] || exit "$rc"
