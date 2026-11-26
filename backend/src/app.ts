@@ -6,6 +6,7 @@ import type { DishStore } from "./dish-store.js";
 import { registerDishRoutes } from "./dishes.js";
 import { InMemoryDishStore } from "./in-memory-dish-store.js";
 import { InMemoryPlanStore } from "./in-memory-plan-store.js";
+import { registerLogRoutes } from "./log.js";
 import { registerPlanRoutes } from "./plan.js";
 import type { PlanStore } from "./plan-store.js";
 import {
@@ -36,7 +37,7 @@ export interface AppOptions extends Partial<ProductRouteDeps> {
   dishStore?: DishStore;
   /** The target range storage seam (IF-001@1.4.0). Default: an in-memory store. */
   targetStore?: TargetStore;
-  /** The day plan storage seam (IF-001@1.5.0 plan routes). Default: an in-memory store. */
+  /** The day plan and log storage seam (IF-001@1.5.0 plan and log routes). Default: an in-memory store. */
   planStore?: PlanStore;
   /**
    * The Owner's IANA time zone (ADR-016). The production entry always passes the parsed OWNER_TIME_ZONE;
@@ -113,15 +114,17 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
     clock: options.clock,
     timeZone,
   });
-  // IF-001@1.5.0 day plan operations.
-  registerPlanRoutes(app, {
+  // IF-001@1.5.0 day plan and meal log operations share one store (ADR-017).
+  const planDeps = {
     plans: options.planStore ?? new InMemoryPlanStore(randomUUID),
     products,
     dishes,
     isOwner,
     clock: options.clock,
     timeZone,
-  });
+  };
+  registerPlanRoutes(app, planDeps);
+  registerLogRoutes(app, planDeps);
 
   return app;
 }
