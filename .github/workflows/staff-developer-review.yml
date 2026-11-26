@@ -1,0 +1,30 @@
+# Relay for the Developer's review rounds (S-DEV-006). No model, no token, no checkout.
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# A pull_request_review run uses the workflow file from the PR, so it must hold nothing worth taking: no
+# permissions and no steps that read secrets. Its only job is to finish, so that staff-developer.yml
+# starts through `workflow_run`, which always runs from the default branch. There the gate re-reads
+# the PR and its reviews through the API and decides; nothing from this run's event is trusted.
+# The Developer App can't push workflow changes (it has no `workflows` permission), and the scope lint
+# fails any agent branch that touches .github/.
+name: staff-developer-review
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  relay:
+    # Only a review requesting changes on a Developer branch in this repo. Anything else is skipped,
+    # and staff-developer ignores skipped relays.
+    if: >-
+      github.event.review.state == 'changes_requested' &&
+      startsWith(github.event.pull_request.head.ref, 'agent/developer/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - run: echo "A review requested changes on a Developer PR; staff-developer takes it from here."

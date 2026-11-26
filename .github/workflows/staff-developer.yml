@@ -23,15 +23,26 @@
 #   write  The staff-engineering App token with issues:write (S-DEV-003, S-GEN-026). It never sees raw
 #          tracker text, the model envelope or proposed code, only the validated JSON and the
 #          shape-checked sandbox result. It renders one comment per draft (S-DEV-022), linking the PR at
-#          stage 2, and requirement-defect items on the requirement's own ticket (S-DEV-008).
+#          stage 2, and requirement-defect items on the requirement's own ticket (S-DEV-008). On a PR
+#          round it also posts a short note on the PR, in fixed text with links only.
 #
-# Starts when an operator applies `dev:implement`, `dev:fix` or `dev:bootstrap` to an issue, or comments
-# `/developer` on one that has one of them (an answer). Fix-up rounds (S-DEV-006): when a draft fails the
-# work sandbox, the write job dispatches this workflow again for the same issue, at most 3 times
-# (FIXUP_ROUNDS). A dispatch is accepted only from this workflow (github-actions[bot]) or an operator.
-# Reviews, check failures and the nightly readiness re-run come later.
-# Never runs on pull requests. Tracker text reaches scripts only through env and files, never
-# through ${{ }} in a script or the prompt string.
+# Starts when (S-DEV-006):
+#   - an operator applies `dev:implement`, `dev:fix` or `dev:bootstrap` to an issue, or comments
+#     `/developer` on one that has one of them (an answer);
+#   - fix-up rounds: a draft fails the work sandbox, and the write job dispatches this workflow again for
+#     the same issue, at most FIXUP_ROUNDS times. A dispatch is accepted only from this workflow
+#     (github-actions[bot]) or an operator;
+#   - PR rounds, through `workflow_run`, which always runs this file from the default branch:
+#       review  an operator submits a review requesting changes on the current head of an
+#               agent/developer/* PR (relayed by staff-developer-review.yml, which holds no permissions);
+#       check   the `ci` run on the Developer's own push to that PR fails in a required job (unit,
+#               integration). At most FIXUP_ROUNDS such rounds per PR, counted from the
+#               [staff:check-round] marker in the branch's commit messages.
+#     The round reads the PR's operator reviews and comments, the failed jobs' log tails and the PR head's
+#     files as untrusted data (S-SEC-001), and pushes its new draft to the same branch.
+# The nightly readiness re-run comes later. PR code is never checked out or run here outside the work
+# sandbox: the head's files are read with `git show`, as data. Tracker text reaches scripts only through
+# env and files, never through ${{ }} in a script or the prompt string.
 name: staff-developer
 
 on:
@@ -49,13 +60,16 @@ on:
         description: Fix-up round, 1 to 3 (S-DEV-006)
         required: true
         type: string
+  workflow_run:
+    workflows: [ci, staff-developer-review]
+    types: [completed]
 
 permissions: {}
 
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: d62cd9f73f35d0877e73c7f2c3bc30e8d2b876fa
+  STAFF_SHA: eac0698854c0a09a4402b20d52f7c8fb52d5067b
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
@@ -63,48 +77,66 @@ env:
   # so this caps the CLI's notional API-price cost, not money spent. It still stops a runaway run.
   MAX_RUN_USD: "6"
   MAX_TURNS: "40"
-  # S-DEV-006 starting value: at most 3 fix-up runs per draft.
+  # S-DEV-006 starting value: at most 3 fix-up runs per draft, and 3 check rounds per PR.
   FIXUP_ROUNDS: "3"
+  # The ci jobs whose failure starts a check round. Infrastructure jobs (image) don't.
+  REQUIRED_JOBS: unit,integration
+  CHECK_MARKER: "[staff:check-round]"
   MODEL: ${{ vars.DEVELOPER_MODEL || 'claude-sonnet-5-5' }}
   # Demotion ceilings written by the ops stage job, as JSON {"<agent>/<area>": stage} (S-GEN-050).
   STAGE_CEILINGS: ${{ vars.STAGE_CEILINGS }}
   RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
-# One run per issue, queued, never cancelled in progress. Unrelated issue events go to their own
-# group, so they can't displace a queued Developer run.
+# One run per agent branch (agent/developer/<issue>), queued, never cancelled in progress, so a ticket
+# round and a PR round on the same issue never overlap. Unrelated events go to their own group, so they
+# can't displace a queued Developer run.
 concurrency:
   group: >-
-    ${{ (github.event_name == 'workflow_dispatch' && format('staff-developer-{0}', inputs.issue)) ||
+    ${{ (github.event_name == 'workflow_dispatch' && format('staff-developer-agent/developer/{0}', inputs.issue)) ||
+        (github.event_name == 'workflow_run' && startsWith(github.event.workflow_run.head_branch, 'agent/developer/')
+         && format('staff-developer-{0}', github.event.workflow_run.head_branch)) ||
         (((github.event_name == 'issues' && startsWith(github.event.label.name, 'dev:')) ||
           (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/developer')))
-         && format('staff-developer-{0}', github.event.issue.number))
+         && format('staff-developer-agent/developer/{0}', github.event.issue.number))
         || format('staff-developer-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   gate:
     # Cheap filters first: issues only (never PRs), no bots, a dev:* ticket label or a /developer comment.
-    # A dispatch (a fix-up round) is checked in the gate step instead.
+    # A dispatch (a fix-up round) and a PR round (workflow_run) are checked in the gate step instead.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.issue.pull_request == null &&
-      github.event.sender.type != 'Bot' &&
-      ((github.event_name == 'issues' && contains(fromJSON('["dev:implement","dev:fix","dev:bootstrap"]'), github.event.label.name)) ||
-       (github.event_name == 'issue_comment' &&
-        github.event.comment.user.type != 'Bot' &&
-        (contains(github.event.issue.labels.*.name, 'dev:implement') ||
-         contains(github.event.issue.labels.*.name, 'dev:fix') ||
-         contains(github.event.issue.labels.*.name, 'dev:bootstrap')) &&
-        contains(github.event.comment.body, '/developer')))
+      (github.event_name == 'workflow_run' &&
+       startsWith(github.event.workflow_run.head_branch, 'agent/developer/') &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       ((github.event.workflow_run.name == 'ci' && github.event.workflow_run.event == 'pull_request' &&
+         github.event.workflow_run.conclusion == 'failure') ||
+        (github.event.workflow_run.name == 'staff-developer-review' &&
+         github.event.workflow_run.conclusion == 'success'))) ||
+      (github.event.issue.pull_request == null &&
+       github.event.sender.type != 'Bot' &&
+       ((github.event_name == 'issues' && contains(fromJSON('["dev:implement","dev:fix","dev:bootstrap"]'), github.event.label.name)) ||
+        (github.event_name == 'issue_comment' &&
+         github.event.comment.user.type != 'Bot' &&
+         (contains(github.event.issue.labels.*.name, 'dev:implement') ||
+          contains(github.event.issue.labels.*.name, 'dev:fix') ||
+          contains(github.event.issue.labels.*.name, 'dev:bootstrap')) &&
+         contains(github.event.comment.body, '/developer'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       issues: read
+      pull-requests: read   # a PR round: the PR, its commits and reviews
+      actions: read         # a check round: the failed ci run's jobs
     outputs:
       allowed: ${{ steps.gate.outputs.allowed }}
       issue: ${{ steps.gate.outputs.issue }}
       round: ${{ steps.gate.outputs.round }}
+      trigger: ${{ steps.gate.outputs.trigger || 'ticket' }}
+      pr: ${{ steps.gate.outputs.pr }}
+      check_round: ${{ steps.gate.outputs.check_round || '0' }}
     steps:
       - name: Check out staff governance at the pinned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,6 +148,9 @@ jobs:
           sparse-checkout: |
             governance
             harness
+      - name: Install harness dependencies (PR rounds only)
+        if: github.event_name == 'workflow_run'
+        run: python3 -m pip install --no-deps --only-binary ':all:' -q -r staff/harness/requirements.txt
       - name: Gate (switch, command, operator)
         id: gate
         env:
@@ -126,12 +161,61 @@ jobs:
           EVENT_ISSUE: ${{ github.event.issue.number }}
           INPUT_ISSUE: ${{ inputs.issue }}
           INPUT_ROUND: ${{ inputs.fixup_round }}
+          WR_NAME: ${{ github.event.workflow_run.name }}
+          WR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_RUN_ID: ${{ github.event.workflow_run.id }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           deny() { echo "::error::Gate denied: $1. Nothing is posted."; exit 1; }
-          issue="$EVENT_ISSUE"; round=0
+          issue="$EVENT_ISSUE"; round=0; trigger=ticket; pr=""; check_round=0
+          # A PR round (S-DEV-006): the module decides from the API's view of the PR, never the event alone.
+          # A denied PR round is a skip, not an error: most reviews and failed runs aren't for the Developer.
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            [ "$AGENTS_ENABLED" = "true" ] || deny "AGENTS_ENABLED is not 'true' (S-GEN-069)"
+            case "$WR_BRANCH" in agent/developer/[1-9]*) ;; *) deny "not a Developer branch" ;; esac
+            case "${WR_BRANCH#agent/developer/}" in *[!0-9]*) deny "not a Developer branch" ;; esac
+            case "$WR_RUN_ID" in ''|*[!0-9]*) deny "bad run id" ;; esac
+            kind=check; [ "$WR_NAME" = staff-developer-review ] && kind=review
+            g="$RUNNER_TEMP/gate"; mkdir -p "$g"
+            pr=$(gh api "repos/$REPO/pulls?state=open&head=${REPO%%/*}:$WR_BRANCH" --jq '.[0].number // empty')
+            case "$pr" in ''|*[!0-9]*) echo "No open PR for $WR_BRANCH; skipping."; echo "allowed=false" >> "$GITHUB_OUTPUT"; exit 0 ;; esac
+            gh api "repos/$REPO/pulls/$pr" > "$g/pr.json"
+            gh api --paginate --slurp "repos/$REPO/pulls/$pr/commits?per_page=100" > "$g/commits.json"
+            extra=()
+            if [ "$kind" = review ]; then
+              gh api --paginate --slurp "repos/$REPO/pulls/$pr/reviews?per_page=100" > "$g/reviews.json"
+              extra=(--reviews "$g/reviews.json")
+            else
+              gh api "repos/$REPO/actions/runs/$WR_RUN_ID" > "$g/run.json"
+              gh api --paginate --slurp "repos/$REPO/actions/runs/$WR_RUN_ID/jobs?per_page=100" > "$g/jobs.json"
+              extra=(--run "$g/run.json" --jobs "$g/jobs.json")
+            fi
+            python3 staff/harness/dev_pr_context.py gate --kind "$kind" --pr "$g/pr.json" \
+              --commits "$g/commits.json" "${extra[@]}" --operators staff/governance/operators.yml \
+              --bot-login "$DEVELOPER_BOT_LOGIN" --repo "$REPO" --required-jobs "$REQUIRED_JOBS" \
+              --max-check-rounds "$FIXUP_ROUNDS" --out "$g/gate.json"
+            if [ "$(jq -r '.allowed' "$g/gate.json")" != true ]; then
+              echo "PR round skipped: $(jq -r '.reason' "$g/gate.json")"
+              echo "allowed=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            issue=$(jq -r '.issue' "$g/gate.json"); check_round=$(jq -r '.check_round' "$g/gate.json")
+            trigger="$kind"
+            case "$issue$check_round" in *[!0-9]*) deny "bad gate output" ;; esac
+            meta=$(gh api "repos/$REPO/issues/$issue" \
+              --jq '[(.pull_request != null), .state, ([.labels[].name | select(startswith("dev:"))] | length)] | @tsv')
+            IFS=$'\t' read -r is_pr state dev_labels <<< "$meta"
+            [ "$is_pr" = false ] || deny "the branch names a pull request, not a ticket"
+            [ "$state" = open ] || deny "the ticket is not open"
+            [ "$dev_labels" = 1 ] || deny "the ticket does not have exactly one dev:* label"
+            {
+              echo "issue=$issue"; echo "round=0"; echo "trigger=$trigger"; echo "pr=$pr"
+              echo "check_round=$check_round"; echo "allowed=true"
+            } >> "$GITHUB_OUTPUT"
+            echo "PR round ($trigger) on #$pr for ticket #$issue, check round $check_round."
+            exit 0
+          fi
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
             case "$INPUT_ISSUE" in ''|*[!0-9]*) deny "issue is not a number" ;; esac
             case "$INPUT_ROUND" in [1-9]) ;; *) deny "fixup_round is not 1 to 9" ;; esac
@@ -174,7 +258,8 @@ jobs:
     permissions:
       contents: read
       issues: read
-      actions: read   # only to download this ticket's previous draft (validated output) from an earlier run
+      pull-requests: read   # the open agent PR's reviews, comments and files (PR context)
+      actions: read   # this ticket's previous draft from an earlier run; a check round's failed job logs
     outputs:
       ok: ${{ steps.result.outputs.ok }}
       reason: ${{ steps.result.outputs.reason }}
@@ -237,8 +322,8 @@ jobs:
           set -euo pipefail
           core=false; [ -f product/knowledge/product-core.md ] && core=true
           event="$GITHUB_EVENT_PATH"
-          if [ "$EVENT_NAME" = workflow_dispatch ]; then
-            # A fix-up round has no issue event: rebuild one from the ticket, so it reads like a label run.
+          if [ "$EVENT_NAME" = workflow_dispatch ] || [ "$EVENT_NAME" = workflow_run ]; then
+            # A fix-up or PR round has no issue event: rebuild one from the ticket, so it reads like a label run.
             gh api "repos/$REPO/issues/$ISSUE" | jq --arg repo "$REPO" '{issue: ., repository: {full_name: $repo}}' \
               > "$WORK/input/event.json"
             event="$WORK/input/event.json"
@@ -284,6 +369,60 @@ jobs:
             --areas product/.staff/areas.yml \
             --code-map-schema staff/plugins/staff-engineering/schemas/code-map.schema.json \
             --meta-out "$WORK/out/dev-meta.json"
+
+      # S-DEV-006: when the ticket has an open agent PR, every round sees its operator reviews and comments
+      # and, on a check round, the failed jobs' log tails (untrusted data, S-SEC-001). On a review or check
+      # round the previous draft is the PR head itself, read with `git show` as data. Then the input is
+      # redaction-checked again.
+      - name: Attach the PR context, if the ticket has an open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          TRIGGER: ${{ needs.gate.outputs.trigger }}
+          CHECK_ROUND: ${{ needs.gate.outputs.check_round }}
+          WR_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          p="$WORK/pr"; mkdir -p "$p/head" "$p/logs"
+          pr=$(gh api "repos/$REPO/pulls?state=open&head=${REPO%%/*}:agent/developer/$ISSUE" --jq '.[0].number // empty')
+          case "$pr" in ''|*[!0-9]*) echo "No open PR for this ticket."; exit 0 ;; esac
+          gh api "repos/$REPO/pulls/$pr" > "$p/pr.json"
+          for what in reviews comments files; do
+            gh api --paginate --slurp "repos/$REPO/pulls/$pr/$what?per_page=100" > "$p/$what.json"
+          done
+          gh api --paginate --slurp "repos/$REPO/issues/$pr/comments?per_page=100" > "$p/issue-comments.json"
+          head_sha=$(jq -r '.head.sha' "$p/pr.json")
+          case "$head_sha" in *[!0-9a-f]*|'') echo "::error::bad head commit"; exit 1 ;; esac
+          if [ "$TRIGGER" = review ] || [ "$TRIGGER" = check ]; then
+            # The head's changed files, as data: fetched as objects and written with `git show`, never checked out.
+            auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+            git -C product -c http.extraheader="$auth" fetch -q --depth 1 origin "$head_sha"
+            jq -r '.[][] | select(.status != "removed") | .filename' "$p/files.json" | while IFS= read -r f; do
+              case "$f" in /*|*..*|'') echo "::error::bad path in the PR"; exit 1 ;; esac
+              mkdir -p "$p/head/$(dirname "$f")"
+              git -C product show "$head_sha:$f" > "$p/head/$f"
+            done
+          fi
+          extra=()
+          if [ "$TRIGGER" = check ]; then
+            case "$WR_RUN_ID" in ''|*[!0-9]*) echo "::error::bad run id"; exit 1 ;; esac
+            gh api --paginate --slurp "repos/$REPO/actions/runs/$WR_RUN_ID/jobs?per_page=100" \
+              | jq -r --arg req "$REQUIRED_JOBS" '($req | split(",")) as $r | .[].jobs[]
+                  | select((.conclusion == "failure" or .conclusion == "timed_out") and (.name | IN($r[]))) | "\(.id)\t\(.name)"' \
+              | while IFS=$'\t' read -r id name; do
+                  case "$id" in *[!0-9]*) continue ;; esac
+                  case "$name" in *[!a-z0-9_-]*) continue ;; esac
+                  # The end of the log is where the failures are; timestamps dropped to save room.
+                  gh api "repos/$REPO/actions/jobs/$id/logs" | sed -E 's/^[0-9T:.-]+Z //' | tail -c 6000 > "$p/logs/$name.log"
+                done
+            extra=(--failed-logs "$p/logs" --check-round "$CHECK_ROUND")
+          fi
+          python staff/harness/dev_pr_context.py bundle --input "$WORK/input/input.json" --trigger "$TRIGGER" \
+            --pr "$p/pr.json" --reviews "$p/reviews.json" --review-comments "$p/comments.json" \
+            --comments "$p/issue-comments.json" --files "$p/files.json" --head-dir "$p/head" "${extra[@]}" \
+            --operators staff/governance/operators.yml --bot-login "$DEVELOPER_BOT_LOGIN"
+          python staff/harness/redact_check.py --in "$WORK/input/input.json" --reason input_redaction
 
       # S-GEN-050: the lowest of .staff/stages.yml (default branch) and the demotion ceiling. Anything
       # unset, missing or malformed is stage 1.
@@ -398,8 +537,11 @@ jobs:
         if: always()
         env:
           JOB_STATUS: ${{ job.status }}
-          TRIGGER_TYPE: ${{ github.event_name == 'issue_comment' && 'comment' || 'label' }}
-          TRIGGER_REF: ${{ github.repository }}#${{ needs.gate.outputs.issue }}
+          TRIGGER_TYPE: >-
+            ${{ github.event_name == 'workflow_run' && 'pull_request' ||
+                github.event_name == 'issue_comment' && 'comment' || 'label' }}
+          TRIGGER_REF: >-
+            ${{ github.repository }}#${{ github.event_name == 'workflow_run' && needs.gate.outputs.pr || needs.gate.outputs.issue }}
           ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
@@ -559,9 +701,13 @@ jobs:
       contents: read
     outputs:
       pr: ${{ steps.pr.outputs.number }}
+      pushed: ${{ steps.push.outputs.pushed || 'false' }}
+      head: ${{ steps.push.outputs.head }}
     env:
       ISSUE: ${{ needs.gate.outputs.issue }}
       ROUND: ${{ needs.gate.outputs.round }}
+      TRIGGER: ${{ needs.gate.outputs.trigger }}
+      CHECK_ROUND: ${{ needs.gate.outputs.check_round }}
       BASE_SHA: ${{ needs.work.outputs.base_sha }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       REPO: ${{ github.repository }}
@@ -645,8 +791,10 @@ jobs:
       # No force push, ever. A later round on an existing branch becomes a merge commit whose parents are
       # the branch head and the new change, and whose tree is the new change, so the PR shows exactly the
       # latest draft against main and the branch history is kept.
+      # A check round's marker goes on the pushed head commit only, so each round counts once (S-DEV-006).
       - name: Commit and push to agent/developer/<issue>
         if: steps.gate.outputs.push == 'true'
+        id: push
         env:
           TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -657,8 +805,14 @@ jobs:
           git config user.name "$DEVELOPER_BOT_LOGIN"
           git config user.email "${bot_id}+${DEVELOPER_BOT_LOGIN}@users.noreply.github.com"
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          case "$TRIGGER" in
+            review) msg="Developer #$ISSUE: changes from the review"; head_msg="$msg" ;;
+            check)  msg="Developer #$ISSUE: fix-up for failing checks"
+                    head_msg="$msg ($CHECK_ROUND/$FIXUP_ROUNDS) $CHECK_MARKER" ;;
+            *)      msg="Developer #$ISSUE: round $ROUND"; head_msg="$msg" ;;
+          esac
           git apply --index --binary --whitespace=nowarn "$WORK/patch/change.patch"
-          git commit -q -m "Developer #$ISSUE: round $ROUND" -m "Staff-Run-Id: $RUN_ID"
+          git commit -q -m "$msg" -m "Staff-Run-Id: $RUN_ID"
           change=$(git rev-parse HEAD)
           if git -c http.extraheader="$auth" fetch -q origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null; then
             head=$(git rev-parse "refs/remotes/origin/$BRANCH")
@@ -667,9 +821,11 @@ jobs:
               exit 0
             fi
             change=$(git commit-tree "$change^{tree}" -p "$head" -p "$change" \
-              -m "Developer #$ISSUE: round $ROUND" -m "Staff-Run-Id: $RUN_ID")
+              -m "$head_msg" -m "Staff-Run-Id: $RUN_ID")
           fi
           git -c http.extraheader="$auth" push -q origin "$change:refs/heads/$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+          echo "head=$change" >> "$GITHUB_OUTPUT"
           echo "Pushed $change to $BRANCH."
 
       - name: Open or update the PR and label it
@@ -712,6 +868,10 @@ jobs:
       REPO: ${{ github.repository }}
       ISSUE: ${{ needs.gate.outputs.issue }}
       ROUND: ${{ needs.gate.outputs.round }}
+      TRIGGER: ${{ needs.gate.outputs.trigger }}
+      GATE_PR: ${{ needs.gate.outputs.pr }}
+      CHECK_ROUND: ${{ needs.gate.outputs.check_round }}
+      PUSHED: ${{ needs.publish.outputs.pushed || 'false' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
     steps:
       # Only the staff harness, fetched anonymously at the pinned commit. No product checkout.
@@ -795,11 +955,40 @@ jobs:
             case "$target" in ''|null) target="$ISSUE" ;; *[!0-9]*) echo "::error::bad route"; exit 1 ;; esac
             url=$(gh api -X POST "repos/$REPO/issues/$target/comments" -F "body=@$f" --jq .html_url)
             echo "posted $url"
+            [ "$target" = "$ISSUE" ] && echo "$url" >> "$WORK/ticket-comment-urls.txt"
             urls+=(--comment-url "$url")
           done
           if [ -s "$WORK/run-record.json" ]; then
             python3 staff/harness/run_record.py update --record "$WORK/run-record.json" "${urls[@]}"
           fi
+
+      # A PR round answers on the PR too: fixed text, the pushed commit and a link to the ticket comment
+      # that holds the decision summary. No model text here.
+      - name: Post the round's note on the PR
+        if: success() && (env.TRIGGER == 'review' || env.TRIGGER == 'check')
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD: ${{ needs.publish.outputs.pushed == 'true' && needs.publish.outputs.head || '' }}
+        run: |
+          set -euo pipefail
+          case "$GATE_PR" in ''|*[!0-9]*) echo "::error::bad PR number"; exit 1 ;; esac
+          link=$(head -n 1 "$WORK/ticket-comment-urls.txt" 2>/dev/null || true)
+          case "$link" in https://github.com/*) ;; *) link="#$ISSUE" ;; esac
+          if [ "$TRIGGER" = review ]; then what="your review requesting changes"
+          else what="the failing checks (round $CHECK_ROUND of $FIXUP_ROUNDS)"; fi
+          sandbox=$(jq -r '.status // "none"' "$WORK/sandbox/sandbox.json" 2>/dev/null || echo none)
+          if [ "$PUSHED" = true ]; then
+            result="I pushed ${HEAD:0:7} to this branch."
+          elif [ "$sandbox" = fail ]; then
+            result="My new draft failed the work sandbox, so nothing was pushed. Fix-up rounds continue on the ticket."
+          else
+            result="I pushed no new change."
+          fi
+          body="Developer round for $what: $result What I changed and why: $link"
+          if [ "$TRIGGER" = check ] && [ "$CHECK_ROUND" -ge "$FIXUP_ROUNDS" ]; then
+            body="$body"$'\n\n'"That was the last automatic round for failing checks on this PR (S-DEV-006). Over to you."
+          fi
+          gh api -X POST "repos/$REPO/issues/$GATE_PR/comments" -f body="$body" --jq .html_url
 
       - name: Re-upload the run record with the comment URLs
         if: always()
