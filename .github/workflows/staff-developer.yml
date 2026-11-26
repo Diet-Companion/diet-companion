@@ -1,4 +1,7 @@
-# Staff Developer, stage 1: advisory, comments and a patch artifact only (S-GEN-052, S-DEV-022).
+# Staff Developer. The stage comes from .staff/stages.yml on the default branch (S-GEN-050):
+#   stage 1  advisory: comments and a patch artifact only (S-GEN-052, S-DEV-022);
+#   stage 2  proposing: a change that passes the work sandbox is pushed to agent/developer/<issue> and
+#            opened as a PR, which the human fully reviews and merges (S-GEN-052, S-DEV-003).
 #
 # HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
 # Agents never change workflows.
@@ -12,10 +15,15 @@
 #   work   The work sandbox (S-DEV-042): no secrets and no write token. Applies the proposed files to the
 #          default branch and saves the patch as an artifact before any proposed code runs. Then runs the
 #          code map's sandbox commands on the base and on the change, and saves the test result.
-#   write  Holds the only write credential: the staff-engineering App token with issues:write
-#          (S-DEV-003, S-GEN-026). It never sees raw tracker text, the model envelope or proposed code,
-#          only the validated JSON and the shape-checked sandbox result. It renders one comment per draft
-#          (S-DEV-022) and requirement-defect items on the requirement's own ticket (S-DEV-008).
+#   publish  Stage 2 only, and only when the sandbox passed. The App token with contents, pull-requests
+#          and issues write. Applies the saved patch (git apply: data, never run) to the base commit the
+#          sandbox tested, pushes it to agent/developer/<issue> without force, and opens or updates the PR.
+#          Title and body are rendered from validated fields (S-SEC-002). The App can't merge: main
+#          requires an approving review, which only the human gives.
+#   write  The staff-engineering App token with issues:write (S-DEV-003, S-GEN-026). It never sees raw
+#          tracker text, the model envelope or proposed code, only the validated JSON and the
+#          shape-checked sandbox result. It renders one comment per draft (S-DEV-022), linking the PR at
+#          stage 2, and requirement-defect items on the requirement's own ticket (S-DEV-008).
 #
 # Starts when an operator applies `dev:implement`, `dev:fix` or `dev:bootstrap` to an issue, or comments
 # `/developer` on one that has one of them (an answer). Fix-up rounds (S-DEV-006): when a draft fails the
@@ -47,7 +55,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 94763f80ddf56bbeaa668c63d45212ecbfe7f48e
+  STAFF_SHA: e6d907c18210ac87a06d91b65bb3acbfc6de07dc
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
@@ -58,6 +66,8 @@ env:
   # S-DEV-006 starting value: at most 3 fix-up runs per draft.
   FIXUP_ROUNDS: "3"
   MODEL: ${{ vars.DEVELOPER_MODEL || 'claude-sonnet-5-5' }}
+  # Demotion ceilings written by the ops stage job, as JSON {"<agent>/<area>": stage} (S-GEN-050).
+  STAGE_CEILINGS: ${{ vars.STAGE_CEILINGS }}
   RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
 
 # One run per issue, queued, never cancelled in progress. Unrelated issue events go to their own
@@ -169,6 +179,7 @@ jobs:
       ok: ${{ steps.result.outputs.ok }}
       reason: ${{ steps.result.outputs.reason }}
       proposed: ${{ steps.result.outputs.proposed }}
+      stage: ${{ steps.stage.outputs.stage || '1' }}
     steps:
       - name: Prepare work directories
         run: |
@@ -273,6 +284,25 @@ jobs:
             --areas product/.staff/areas.yml \
             --code-map-schema staff/plugins/staff-engineering/schemas/code-map.schema.json \
             --meta-out "$WORK/out/dev-meta.json"
+
+      # S-GEN-050: the lowest of .staff/stages.yml (default branch) and the demotion ceiling. Anything
+      # unset, missing or malformed is stage 1.
+      - name: Effective stage
+        id: stage
+        run: |
+          set -euo pipefail
+          area=$(jq -r '.area // empty' "$WORK/out/dev-meta.json")
+          case "$area" in ''|*[!a-z0-9-]*) echo "stage=1" >> "$GITHUB_OUTPUT"; echo "STAGE=1" >> "$GITHUB_ENV"; exit 0 ;; esac
+          ceiling=""
+          if [ -n "$STAGE_CEILINGS" ]; then
+            ceiling=$(printf '%s' "$STAGE_CEILINGS" | jq -r --arg k "developer/$area" '.[$k] // empty | tostring' 2>/dev/null) \
+              || ceiling=invalid
+          fi
+          stage=$(python3 staff/harness/contract.py stage --stages-yml product/.staff/stages.yml \
+            --agent developer --area "$area" --ceiling "$ceiling")
+          echo "Developer stage in $area: $stage"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
 
       - name: Build the Developer prompt and CLI schema
         run: |
@@ -382,7 +412,7 @@ jobs:
           python3 staff/harness/run_record.py write \
             --out "$WORK/out/run-record.json" \
             --run-id "$RUN_ID" --attempt "$ATTEMPT" \
-            --identity diet-companion-engineering --plugin staff-engineering --agent developer --stage 1 \
+            --identity diet-companion-engineering --plugin staff-engineering --agent developer --stage "${STAGE:-1}" \
             --model "$MODEL" --staff-sha "$STAFF_SHA" --product-sha "$product_sha" \
             --trigger-type "$TRIGGER_TYPE" --trigger-ref "$TRIGGER_REF" \
             --input "$WORK/input/input.json" --result "$WORK/validation.json" \
@@ -429,6 +459,8 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: read
+    outputs:
+      base_sha: ${{ steps.base.outputs.sha }}
     steps:
       - name: Prepare work directories
         run: |
@@ -444,6 +476,11 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: base
           persist-credentials: false
+
+      # The commit the patch is made against and tested on. The publish job applies it to this commit.
+      - name: Record the base commit
+        id: base
+        run: echo "sha=$(git -C base rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check out staff at the pinned commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -511,8 +548,157 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  write:
+  # Stage 2 (S-GEN-052): push a sandbox-passing change to agent/developer/<issue> and open its PR.
+  # No proposed code runs here: the patch is applied as data, and only harness scripts run.
+  publish:
     needs: [gate, read, work]
+    if: needs.read.outputs.stage == '2' && needs.work.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      pr: ${{ steps.pr.outputs.number }}
+    env:
+      ISSUE: ${{ needs.gate.outputs.issue }}
+      ROUND: ${{ needs.gate.outputs.round }}
+      BASE_SHA: ${{ needs.work.outputs.base_sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+    steps:
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          case "$ISSUE" in ''|*[!0-9]*) echo "::error::bad issue"; exit 1 ;; esac
+          case "$BASE_SHA" in *[!0-9a-f]*|'') echo "::error::bad base commit"; exit 1 ;; esac
+          [ "${#BASE_SHA}" = 40 ] || { echo "::error::bad base commit"; exit 1; }
+          echo "WORK=$RUNNER_TEMP/developer" >> "$GITHUB_ENV"
+          echo "BRANCH=agent/developer/$ISSUE" >> "$GITHUB_ENV"
+
+      - name: Download the validated output
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: developer-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/developer/run
+      - name: Download the patch
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: developer-patch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/developer/patch
+      - name: Download the sandbox result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: developer-sandbox-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/developer/sandbox
+
+      # Only the staff harness, fetched anonymously at the pinned commit.
+      - name: Fetch the staff harness at the pinned commit
+        run: |
+          set -euo pipefail
+          git init -q staff
+          git -C staff fetch -q --depth 1 "https://github.com/${STAFF_REPO}.git" "$STAFF_SHA"
+          git -C staff checkout -q FETCH_HEAD
+          [ "$(git -C staff rev-parse HEAD)" = "$STAFF_SHA" ]
+
+      # S-DEV-020: only a change whose build passes and that breaks no base-passing test is pushed.
+      - name: The sandbox must have passed
+        id: gate
+        run: |
+          set -euo pipefail
+          status=$(jq -r '.status // "missing"' "$WORK/sandbox/sandbox.json" 2>/dev/null || echo missing)
+          echo "Sandbox result: $status"
+          [ "$status" = pass ] && echo "push=true" >> "$GITHUB_OUTPUT" || echo "push=false" >> "$GITHUB_OUTPUT"
+
+      - name: Render the PR title and body (deterministic, no model)
+        if: steps.gate.outputs.push == 'true'
+        run: |
+          set -euo pipefail
+          python3 -m pip install --no-deps --only-binary ':all:' -q -r staff/harness/requirements.txt
+          python3 staff/harness/render_developer.py pr --in "$WORK/run/validated.json" \
+            --meta "$WORK/run/dev-meta.json" --applied "$WORK/patch/applied.json" \
+            --sandbox "$WORK/sandbox/sandbox.json" --issue "$ISSUE" --out-dir "$WORK/pr" \
+            --run-id "$RUN_ID" --run-url "$RUN_URL" --stage 2 --model "$MODEL" --staff-sha "$STAFF_SHA"
+
+      - name: Mint the engineering App token (contents, pull-requests and issues write, this repo only)
+        if: steps.gate.outputs.push == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ENGINEERING_APP_ID }}
+          private-key: ${{ secrets.ENGINEERING_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - name: Check out the base commit the sandbox tested
+        if: steps.gate.outputs.push == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.work.outputs.base_sha }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+
+      # No force push, ever. A later round on an existing branch becomes a merge commit whose parents are
+      # the branch head and the new change, and whose tree is the new change, so the PR shows exactly the
+      # latest draft against main and the branch history is kept.
+      - name: Commit and push to agent/developer/<issue>
+        if: steps.gate.outputs.push == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          cd product
+          bot_id=$(gh api "users/${DEVELOPER_BOT_LOGIN/\[bot\]/%5Bbot%5D}" --jq .id)
+          git config user.name "$DEVELOPER_BOT_LOGIN"
+          git config user.email "${bot_id}+${DEVELOPER_BOT_LOGIN}@users.noreply.github.com"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git apply --index --binary --whitespace=nowarn "$WORK/patch/change.patch"
+          git commit -q -m "Developer #$ISSUE: round $ROUND" -m "Staff-Run-Id: $RUN_ID"
+          change=$(git rev-parse HEAD)
+          if git -c http.extraheader="$auth" fetch -q origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null; then
+            head=$(git rev-parse "refs/remotes/origin/$BRANCH")
+            if [ "$(git rev-parse "$head^{tree}")" = "$(git rev-parse "$change^{tree}")" ]; then
+              echo "The branch already holds this change; nothing to push."
+              exit 0
+            fi
+            change=$(git commit-tree "$change^{tree}" -p "$head" -p "$change" \
+              -m "Developer #$ISSUE: round $ROUND" -m "Staff-Run-Id: $RUN_ID")
+          fi
+          git -c http.extraheader="$auth" push -q origin "$change:refs/heads/$BRANCH"
+          echo "Pushed $change to $BRANCH."
+
+      - name: Open or update the PR and label it
+        if: steps.gate.outputs.push == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          title=$(head -n 1 "$WORK/pr/pr-title.txt")
+          number=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -z "$number" ]; then
+            url=$(gh pr create --repo "$REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" \
+              --title "$title" --body-file "$WORK/pr/pr-body.md")
+            number="${url##*/}"
+          else
+            gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$WORK/pr/pr-body.md" > /dev/null
+          fi
+          case "$number" in ''|*[!0-9]*) echo "::error::no PR number"; exit 1 ;; esac
+          labels=(agent)
+          jq -e '(.pr.dependencies // []) | length > 0' "$WORK/run/validated.json" > /dev/null && labels+=(dev:dependency)
+          for l in "${labels[@]}"; do
+            gh api -X POST "repos/$REPO/issues/$number/labels" -f "labels[]=$l" > /dev/null
+          done
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "PR #$number: ${labels[*]}"
+
+  write:
+    needs: [gate, read, work, publish]
     if: always() && needs.gate.outputs.allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -521,6 +707,8 @@ jobs:
     env:
       OK: ${{ needs.read.outputs.ok }}
       REASON: ${{ needs.read.outputs.reason }}
+      STAGE: ${{ needs.read.outputs.stage || '1' }}
+      PR_NUMBER: ${{ needs.publish.outputs.pr }}
       REPO: ${{ github.repository }}
       ISSUE: ${{ needs.gate.outputs.issue }}
       ROUND: ${{ needs.gate.outputs.round }}
@@ -578,8 +766,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$WORK/comments"
+          case "$STAGE" in [1-4]) ;; *) STAGE=1 ;; esac
           footer=(--out-dir "$WORK/comments" --run-id "$RUN_ID" --run-url "$RUN_URL"
-                  --model "$MODEL" --staff-sha "$STAFF_SHA")
+                  --model "$MODEL" --staff-sha "$STAFF_SHA" --stage "$STAGE")
           rendered=false
           if [ "$OK" = true ] && [ -s "$WORK/validated.json" ]; then
             extra=()
@@ -587,6 +776,7 @@ jobs:
             [ -s "$WORK/patch/applied.json" ] && extra+=(--applied "$WORK/patch/applied.json"
                                                          --patch-artifact "developer-patch-$RUN_ID")
             [ -s "$WORK/sandbox/sandbox.json" ] && extra+=(--sandbox "$WORK/sandbox/sandbox.json")
+            case "$PR_NUMBER" in ''|*[!0-9]*) ;; *) extra+=(--pr-number "$PR_NUMBER") ;; esac
             python3 staff/harness/render_developer.py render --in "$WORK/validated.json" \
               --meta "$WORK/dev-meta.json" "${extra[@]}" "${footer[@]}" && rendered=true
           fi
