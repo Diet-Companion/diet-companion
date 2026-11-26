@@ -184,4 +184,6 @@ jobs:
           if jq -e '.needs_label | index("dev:dependency")' "$work/result.json" > /dev/null 2>&1; then
             gh api -X POST "repos/$REPO/issues/$PR/labels" -f "labels[]=dev:dependency" --silent
           fi
-          exit "$rc"
+          # The verdict is the staff/diff-check status, the required one. The job itself fails only on a
+          # harness error, so a later sign-off run doesn't leave this job's stale red X on the PR.
+          [ "$rc" -le 1 ] || exit "$rc"
