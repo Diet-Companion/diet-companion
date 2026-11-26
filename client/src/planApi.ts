@@ -80,11 +80,11 @@ export interface PlanApi {
   removePlanEntry(date: string, entryId: string): Promise<RemoveResult>;
 }
 
-function isRecord(x: unknown): x is Record<string, unknown> {
+export function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
 
-function isMeal(x: unknown): x is Meal {
+export function isMeal(x: unknown): x is Meal {
   return typeof x === "string" && (MEALS as readonly string[]).includes(x);
 }
 
@@ -99,7 +99,7 @@ function amountOf(x: unknown): number | null {
   return typeof x === "number" ? x : null;
 }
 
-function parseEntry(raw: unknown): PlanEntry | null {
+export function parseEntry(raw: unknown): PlanEntry | null {
   if (!isRecord(raw) || typeof raw.id !== "string" || !isMeal(raw.meal)) return null;
   const product = parseSubject(raw.product);
   const dish = parseSubject(raw.dish);
@@ -120,11 +120,11 @@ function parseSheet(raw: unknown): DaySheet | null {
   return { date: raw.date, today: raw.today, closed: raw.closed, editable: raw.editable, meals };
 }
 
-function messageOf(body: unknown): string | null {
+export function messageOf(body: unknown): string | null {
   return isRecord(body) && typeof body.message === "string" && body.message !== "" ? body.message : null;
 }
 
-function refusal(status: number, body: unknown): PlanError | null {
+export function refusal(status: number, body: unknown): PlanError | null {
   if (![400, 404, 409, 422].includes(status) || !isRecord(body) || typeof body.code !== "string") return null;
   const reasons = Array.isArray(body.reasons) ? body.reasons.filter((x): x is string => typeof x === "string") : [];
   return { code: body.code, reasons, message: messageOf(body) };
