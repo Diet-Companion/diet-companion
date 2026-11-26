@@ -1,6 +1,8 @@
 import {
   DayClosedError,
   sortEntries,
+  type EntryKind,
+  type Meal,
   type NewStoredEntry,
   type PlanDay,
   type PlanStore,
@@ -10,6 +12,7 @@ import {
 
 interface Row {
   day: string;
+  kind: EntryKind;
   entry: StoredEntry;
 }
 
@@ -25,20 +28,20 @@ export class InMemoryPlanStore implements PlanStore {
     this.days.set(day, { closed_at: at });
   }
 
-  async read(day: string): Promise<PlanDay> {
+  async read(day: string, kind: EntryKind = "plan"): Promise<PlanDay> {
     return {
       closed: this.days.get(day)?.closed_at != null,
-      entries: sortEntries(this.rows.filter((r) => r.day === day).map((r) => r.entry)),
+      entries: sortEntries(this.rows.filter((r) => r.day === day && r.kind === kind).map((r) => r.entry)),
     };
   }
 
-  async mutate<T>(day: string, _at: Date, work: (tx: PlanTx) => Promise<T>): Promise<T> {
+  async mutate<T>(day: string, _at: Date, work: (tx: PlanTx) => Promise<T>, kind: EntryKind = "plan"): Promise<T> {
     if (this.days.get(day)?.closed_at != null) throw new DayClosedError();
     const before = this.rows;
     const hadDay = this.days.has(day);
     if (!hadDay) this.days.set(day, { closed_at: null });
     try {
-      return await work(this.tx(day));
+      return await work(this.tx(day, kind));
     } catch (error) {
       // Rows are replaced, never edited in place, so the old array is a full snapshot.
       this.rows = before;
@@ -47,30 +50,32 @@ export class InMemoryPlanStore implements PlanStore {
     }
   }
 
-  private tx(day: string): PlanTx {
+  private tx(day: string, kind: EntryKind): PlanTx {
+    const own = (r: Row): boolean => r.day === day && r.kind === kind;
     return {
       add: async (entry: NewStoredEntry): Promise<StoredEntry> => {
-        const same = this.rows.filter((r) => r.day === day && r.entry.meal === entry.meal);
+        const same = this.rows.filter((r) => own(r) && r.entry.meal === entry.meal);
         const position = same.reduce((max, r) => Math.max(max, r.entry.position + 1), 0);
         const saved: StoredEntry = { ...entry, id: this.newId(), position };
-        this.rows = [...this.rows, { day, entry: saved }];
+        this.rows = [...this.rows, { day, kind, entry: saved }];
         return saved;
       },
-      find: async (id: string): Promise<StoredEntry | undefined> =>
-        this.rows.find((r) => r.day === day && r.entry.id === id)?.entry,
+      find: async (id: string): Promise<StoredEntry | undefined> => this.rows.find((r) => own(r) && r.entry.id === id)?.entry,
       setAmount: async (id, amount): Promise<StoredEntry | undefined> => {
-        const found = this.rows.find((r) => r.day === day && r.entry.id === id);
+        const found = this.rows.find((r) => own(r) && r.entry.id === id);
         if (!found) return undefined;
         const changed: StoredEntry = { ...found.entry, grams: amount.grams, pieces: amount.pieces };
-        this.rows = this.rows.map((r) => (r === found ? { day, entry: changed } : r));
+        this.rows = this.rows.map((r) => (r === found ? { day, kind, entry: changed } : r));
         return changed;
       },
       remove: async (id: string): Promise<boolean> => {
-        const found = this.rows.find((r) => r.day === day && r.entry.id === id);
+        const found = this.rows.find((r) => own(r) && r.entry.id === id);
         if (!found) return false;
         this.rows = this.rows.filter((r) => r !== found);
         return true;
       },
+      list: async (meal: Meal, other: EntryKind = kind): Promise<StoredEntry[]> =>
+        sortEntries(this.rows.filter((r) => r.day === day && r.kind === other && r.entry.meal === meal).map((r) => r.entry)),
     };
   }
 }
