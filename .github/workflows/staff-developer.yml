@@ -885,8 +885,9 @@ jobs:
           echo "WORK=$RUNNER_TEMP/developer" >> "$GITHUB_ENV"
           echo "STAFF_REASON_FILE=$RUNNER_TEMP/developer/write-reason" >> "$GITHUB_ENV"
 
-      # The staff-engineering identity (S-DEV-003, S-GEN-026). Stage 1: comments on issues only.
-      - name: Mint the engineering App token (issues:write, this repo only)
+      # The staff-engineering identity (S-DEV-003, S-GEN-026): comments on the ticket, and on a PR round a
+      # note on the PR, which needs pull-requests:write (issues:write alone is refused on a PR, 403).
+      - name: Mint the engineering App token (issues and pull-requests write, this repo only)
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -895,6 +896,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-issues: write
+          permission-pull-requests: write
 
       - name: Download the validated output and run record
         continue-on-error: true
