@@ -1,17 +1,23 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { closedAtIso } from "./day-close.js";
+import { closedAtIso, type DayCloser } from "./day-close.js";
 import { isDishSelectable, type DishStore } from "./dish-store.js";
 import { toDishResponse, type DishResponse } from "./dishes.js";
 import { DayClosedError, MEALS, isMeal, type Meal, type PlanStore, type PlanTx, type StoredEntry } from "./plan-store.js";
 import { isSelectable, toProductResponse, type ProductResponse, type ProductStore } from "./products.js";
+import type { TargetStore } from "./target-store.js";
 import { isCalendarDate } from "./targets.js";
 import { todayIn } from "./today.js";
+import { buildSheetParts } from "./totals.js";
 
-/** Dependencies of the day plan and log routes (CMP-002, IF-001@1.5.0). */
+/** Dependencies of the day plan and log routes (CMP-002, IF-001@1.6.0). */
 export interface PlanRouteDeps {
   plans: PlanStore;
   products: ProductStore;
   dishes: DishStore;
+  /** The saved ranges: an open day's result uses the ranges in force (ADR-015/C-003). */
+  targets: TargetStore;
+  /** Reads the ranges stored at closing: a closed day's result uses only those (ADR-015/C-004). Absent: no day is ever closed. */
+  closer?: DayCloser;
   /** The owner check hook. Absent: every request is refused (fail closed, ADR-004/C-005). */
   isOwner?: (request: FastifyRequest) => boolean | Promise<boolean>;
   /** The clock seam: today and the creation time come from here (ADR-016/C-001). */
@@ -208,17 +214,19 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
     sendError(request, reply, 404, "entry.not_found", "No plan entry has this id on this day.");
 
   // IF-001@1.6.0 getDayPlan: any valid date; reading a closed day works (ADR-019/C-002); closed_at is null while open.
+  // The result and the meal totals come from plan entries only; a closed day uses its stored ranges (REQ-010/AC-014).
   app.get("/days/:date/plan", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return unauthorised(request, reply);
     const date = (request.params as { date: string }).date;
     if (!isCalendarDate(date)) return badRequest(request, reply, "The date is not a valid calendar date.");
     const today = todayIn(clock(), deps.timeZone);
     const day = await deps.plans.read(date);
+    const parts = await buildSheetParts(deps, date, day.entries, day.closed);
     const meals = [];
     for (const meal of MEALS) {
       const entries = [];
       for (const entry of day.entries.filter((e) => e.meal === meal)) entries.push(await toEntryResponse(deps, entry));
-      meals.push({ meal, has_plan: entries.length > 0, entries });
+      meals.push({ meal, has_plan: entries.length > 0, entries, totals: parts.meals[meal] });
     }
     return reply.code(200).send({
       kind: "plan",
@@ -228,6 +236,7 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
       closed_at: await closedAtIso(deps.plans, date),
       editable: !day.closed && isPlannable(date, today),
       meals,
+      result: parts.result,
     });
   });
 
