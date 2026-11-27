@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { readReminders, type Reminders } from "./closeLogic";
 import { PlanView } from "./PlanView";
+import type { OpenDaysApi, PlanApi } from "./planApi";
 import {
   changeAmount,
   openPlan,
@@ -14,7 +16,8 @@ import {
 } from "./planScreenLogic";
 
 export interface PlanScreenProps {
-  deps: PlanDeps;
+  /** plan may also carry getOpenDays for the close reminder (REQ-011/AC-004); without it no reminder shows. */
+  deps: PlanDeps & { plan: PlanApi & Partial<OpenDaysApi> };
   onUnauthorized: () => void;
   onBack: () => void;
 }
@@ -26,6 +29,7 @@ export function PlanScreen(props: PlanScreenProps) {
   const { deps, onUnauthorized } = props;
   const [phase, setPhase] = useState<Phase>({ name: "loading" });
   const [busy, setBusy] = useState(false);
+  const [reminders, setReminders] = useState<Reminders>({});
 
   async function load() {
     setPhase({ name: "loading" });
@@ -51,6 +55,19 @@ export function PlanScreen(props: PlanScreenProps) {
     void load();
   }, []);
 
+  // The reminder of each shown day: getOpenDays with before set to that day. It never blocks the screen.
+  const shownDays = phase.name === "ready" ? phase.state.days.map((d) => d.date).join(",") : "";
+  useEffect(() => {
+    if (shownDays === "") return;
+    let current = true;
+    void readReminders(deps.plan, shownDays.split(",")).then((r) => {
+      if (current) setReminders(r);
+    });
+    return () => {
+      current = false;
+    };
+  }, [shownDays]);
+
   if (phase.name === "ready") {
     return (
       <PlanView
@@ -58,6 +75,7 @@ export function PlanScreen(props: PlanScreenProps) {
         products={phase.catalogs.products}
         dishes={phase.catalogs.dishes}
         busy={busy}
+        reminders={reminders}
         onForm={(date, meal, values) =>
           setPhase((p) => (p.name === "ready" ? { ...p, state: setForm(p.state, date, meal, values) } : p))
         }
