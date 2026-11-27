@@ -4,12 +4,14 @@
 import type { Api } from "./api";
 import type { Dish, DishApi } from "./dishApi";
 import type {
+  DayListItem,
   DishLineOverride,
   DishProductsInput,
   LogApi,
   LogCloseApi,
   LogDay,
   LogEntry,
+  LogListApi,
   LogSplitApi,
 } from "./logApi";
 import { logErrorText, prevDate } from "./logLogic";
@@ -22,7 +24,7 @@ export { amountText };
 
 export interface LogDeps {
   /** closeDay is optional here; only the confirm step of the close control calls it (REQ-011). */
-  log: LogApi & Partial<LogSplitApi> & Partial<LogCloseApi>;
+  log: LogApi & Partial<LogSplitApi> & Partial<LogCloseApi> & Partial<LogListApi>;
   targets: Pick<TargetsApi, "getTargetRanges">;
   products: Pick<Api, "listProducts">;
   /** Read only: the dish split never writes a dish (REQ-014/AC-010). */
@@ -47,6 +49,13 @@ export interface SplitForm {
   refused: Record<number, string>;
 }
 
+/** The day list (REQ-016): the pages read so far, as the server sent them, and the next before value. */
+export interface DayListState {
+  open: boolean;
+  items: DayListItem[];
+  nextBefore: string | null;
+}
+
 export interface LogState {
   today: string;
   /** The day shown. */
@@ -57,6 +66,8 @@ export interface LogState {
   error: ShownError | null;
   /** Open dish split forms, by formKey(date, meal). */
   splits?: Record<string, SplitForm>;
+  /** The day list, once it was opened (REQ-016/AC-001). */
+  dayList?: DayListState;
 }
 
 export type LogOpened =
@@ -277,4 +288,43 @@ export async function submitSplit(deps: LogDeps, state: LogState, meal: Meal): P
     text: names.length > 0 ? `${names.join(", ")}: ${base}` : base,
   };
   return { kind: "state", state: { ...withSplit(state, key, { ...form, refused }), error } };
+}
+
+// ---- The day list (REQ-016/AC-001, AC-003, AC-004, AC-005) ----
+// state and open_past are kept exactly as the server sent them (ADR-016/C-003).
+
+async function readDays(deps: LogDeps, state: LogState, before: string | undefined, prior: DayListItem[]): Promise<LogNext> {
+  const list = deps.log.listDays?.bind(deps.log);
+  if (!list) {
+    return { kind: "state", state: { ...state, error: shown({ code: "failed", reasons: [], message: null }) } };
+  }
+  const r = await (before === undefined ? list() : list(before));
+  if (r.kind === "unauthorized") return { kind: "unauthorized" };
+  if (r.kind !== "ok") {
+    return { kind: "state", state: { ...state, error: shown({ code: "failed", reasons: [], message: r.message }) } };
+  }
+  const dayList: DayListState = { open: true, items: [...prior, ...r.list.items], nextBefore: r.list.nextBefore };
+  return { kind: "state", state: { ...state, dayList, error: null } };
+}
+
+/** The Days control: opens the list with the first page (no before), or hides an open list. */
+export function toggleDayList(deps: LogDeps, state: LogState): Promise<LogNext> {
+  if (state.dayList?.open) {
+    return Promise.resolve({ kind: "state", state: { ...state, dayList: { ...state.dayList, open: false } } });
+  }
+  return readDays(deps, state, undefined, []);
+}
+
+/** Loads the next page with before = next_before and appends it. Does nothing at the end of the list. */
+export function moreDays(deps: LogDeps, state: LogState): Promise<LogNext> {
+  const list = state.dayList;
+  if (!list || list.nextBefore === null) return Promise.resolve({ kind: "state", state });
+  return readDays(deps, state, list.nextBefore, list.items);
+}
+
+/** Opens a day of the list on the log screen, by the same path as earlier and later (showDay). */
+export async function pickDay(deps: LogDeps, state: LogState, date: string): Promise<LogNext> {
+  const next = await showDay(deps, state, date);
+  if (next.kind !== "state" || next.state.error !== null || !next.state.dayList) return next;
+  return { kind: "state", state: { ...next.state, dayList: { ...next.state.dayList, open: false } } };
 }

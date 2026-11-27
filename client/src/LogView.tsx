@@ -1,5 +1,6 @@
 import type { Product } from "./api";
 import { canClose } from "./closeLogic";
+import { DayListControl } from "./DayList";
 import type { Dish } from "./dishApi";
 import { EntryFields } from "./EntryFields";
 import type { LogEntry, LogMeal } from "./logApi";
@@ -34,6 +35,10 @@ export interface LogViewProps {
   onClose?: () => void;
   onCloseConfirm?: () => void;
   onCloseCancel?: () => void;
+  /** Day list (REQ-016/AC-001): the Days control, a day of the list, the next page. */
+  onDays?: () => void;
+  onDayPick?: (date: string) => void;
+  onDayMore?: () => void;
 }
 
 function subjectText(s: PlanSubject): string {
@@ -184,6 +189,7 @@ export function LogView(props: LogViewProps) {
           Later day
         </button>
       ) : null}
+      <DayListControl state={state} busy={props.busy} onDays={props.onDays} onDayPick={props.onDayPick} onDayMore={props.onDayMore} />
       {day.closed ? <p data-testid="log-closed-mark">This day is closed.</p> : null}
       <CloseControl {...props} />
       <DayResultList prefix="log" result={day.result} />
