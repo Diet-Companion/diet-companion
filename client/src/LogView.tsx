@@ -3,6 +3,7 @@ import type { Dish } from "./dishApi";
 import { EntryFields } from "./EntryFields";
 import type { LogEntry, LogMeal } from "./logApi";
 import { canShowLater } from "./logLogic";
+import { LogSplit } from "./LogSplit";
 import { amountText, type LogState } from "./logScreenLogic";
 import { MEALS, type Meal, type PlanSubject } from "./planApi";
 import { EMPTY_FORM, MEAL_LABELS, formKey, markOf, type FormValues } from "./planLogic";
@@ -21,6 +22,11 @@ export interface LogViewProps {
   onEarlier: () => void;
   onLater: () => void;
   onBack: () => void;
+  /** Dish split (REQ-014/AC-005, AC-010). */
+  onSplitOpen?: (meal: Meal) => void;
+  onSplitDish?: (meal: Meal, dishId: string) => void;
+  onSplitLine?: (meal: Meal, position: number, values: { grams: string; pieces: string }) => void;
+  onSplitSave?: (meal: Meal) => void;
 }
 
 function subjectText(s: PlanSubject): string {
@@ -66,7 +72,8 @@ function MealBlock(props: { meal: Meal; logMeal: LogMeal | undefined; view: LogV
   const { meal, logMeal, view } = props;
   const date = view.state.day.date;
   const entries = logMeal?.entries ?? [];
-  const values = view.state.forms[formKey(date, meal)] ?? EMPTY_FORM;
+  const key = formKey(date, meal);
+  const values = view.state.forms[key] ?? EMPTY_FORM;
   return (
     <section data-testid={`log-meal-${meal}`}>
       <h4>{MEAL_LABELS[meal]}</h4>
@@ -108,6 +115,16 @@ function MealBlock(props: { meal: Meal; logMeal: LogMeal | undefined; view: LogV
           Add
         </button>
       </form>
+      <LogSplit
+        meal={meal}
+        form={view.state.splits?.[key]}
+        dishes={view.dishes}
+        busy={view.busy}
+        onOpen={() => view.onSplitOpen?.(meal)}
+        onDish={(dishId) => view.onSplitDish?.(meal, dishId)}
+        onLine={(position, amounts) => view.onSplitLine?.(meal, position, amounts)}
+        onSave={() => view.onSplitSave?.(meal)}
+      />
     </section>
   );
 }

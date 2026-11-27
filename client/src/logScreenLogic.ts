@@ -2,8 +2,8 @@
 // Today comes from getTargetRanges as_of, then from the day responses (ADR-016/C-003). The device clock is never read.
 
 import type { Api } from "./api";
-import type { DishApi } from "./dishApi";
-import type { LogApi, LogDay, LogEntry } from "./logApi";
+import type { Dish, DishApi } from "./dishApi";
+import type { DishLineOverride, DishProductsInput, LogApi, LogDay, LogEntry, LogSplitApi } from "./logApi";
 import { logErrorText, prevDate } from "./logLogic";
 import type { Meal, PlanError } from "./planApi";
 import { EMPTY_FORM, entryInput, formKey, nextDate, writeOutcome, type FormValues, type WriteOutcome } from "./planLogic";
@@ -13,10 +13,29 @@ import type { TargetsApi } from "./targetsApi";
 export { amountText };
 
 export interface LogDeps {
-  log: LogApi;
+  log: LogApi & Partial<LogSplitApi>;
   targets: Pick<TargetsApi, "getTargetRanges">;
   products: Pick<Api, "listProducts">;
+  /** Read only: the dish split never writes a dish (REQ-014/AC-010). */
   dishes: Pick<DishApi, "listDishes">;
+}
+
+/** One line of the dish split form, typed amounts as text, with the dish amounts they started from. */
+export interface SplitLine {
+  position: number;
+  name: string;
+  grams: string;
+  pieces: string;
+  origGrams: string;
+  origPieces: string;
+}
+
+export interface SplitForm {
+  /** "" while no dish is chosen. */
+  dishId: string;
+  lines: SplitLine[];
+  /** Refused lines of the last save, by dish position: the reason. */
+  refused: Record<number, string>;
 }
 
 export interface LogState {
@@ -27,6 +46,8 @@ export interface LogState {
   /** Typed amounts of entries, by entry id. */
   edits: Record<string, string>;
   error: ShownError | null;
+  /** Open dish split forms, by formKey(date, meal). */
+  splits?: Record<string, SplitForm>;
 }
 
 export type LogOpened =
@@ -136,4 +157,115 @@ export async function confirmMeal(deps: LogDeps, state: LogState, meal: Meal): P
   const r = await deps.log.confirmMealAsPlanned(state.day.date, meal);
   const outcome = writeOutcome(r.kind === "ok" ? { kind: "ok" } : r);
   return finish(deps, state, outcome, state);
+}
+
+// ---- Log a dish as separate products (REQ-014/AC-005, REQ-014/AC-010) ----
+
+const EMPTY_SPLIT: SplitForm = { dishId: "", lines: [], refused: {} };
+
+function withSplit(state: LogState, key: string, form: SplitForm | null): LogState {
+  const splits = { ...(state.splits ?? {}) };
+  if (form === null) delete splits[key];
+  else splits[key] = form;
+  return { ...state, splits };
+}
+
+const amountString = (n: number | null): string => (n === null ? "" : String(n));
+
+/** Opens the split form of (shown day, meal), with no dish chosen yet. An open form is kept as it is. */
+export function openSplit(state: LogState, meal: Meal): LogState {
+  const key = formKey(state.day.date, meal);
+  return state.splits?.[key] ? state : withSplit(state, key, EMPTY_SPLIT);
+}
+
+/** Chooses the dish to split: its lines with the dish amounts prefilled. No dish clears the lines. */
+export function chooseSplitDish(state: LogState, meal: Meal, dish: Dish | undefined): LogState {
+  const key = formKey(state.day.date, meal);
+  if (!dish) return withSplit(state, key, EMPTY_SPLIT);
+  const lines = dish.lines.map((l) => ({
+    position: l.position,
+    name: l.product.name,
+    grams: amountString(l.grams),
+    pieces: amountString(l.pieces),
+    origGrams: amountString(l.grams),
+    origPieces: amountString(l.pieces),
+  }));
+  return withSplit(state, key, { dishId: dish.id, lines, refused: {} });
+}
+
+/** Types an amount of one dish line (by dish position). */
+export function setSplitLine(state: LogState, meal: Meal, position: number, values: { grams: string; pieces: string }): LogState {
+  const key = formKey(state.day.date, meal);
+  const form = state.splits?.[key];
+  if (!form) return state;
+  const refused = { ...form.refused };
+  delete refused[position];
+  const lines = form.lines.map((l) => (l.position === position ? { ...l, grams: values.grams, pieces: values.pieces } : l));
+  return withSplit(state, key, { ...form, lines, refused });
+}
+
+// Blank or unreadable text sends no amount; the server answers for it.
+function numberOf(text: string): number | undefined {
+  const t = text.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isNaN(n) ? undefined : n;
+}
+
+/** The request: only the lines whose amounts were changed, by dish position. A line left as is keeps the dish amount. */
+export function splitRequest(meal: Meal, form: SplitForm): DishProductsInput {
+  const lines: DishLineOverride[] = [];
+  for (const l of form.lines) {
+    if (l.grams === l.origGrams && l.pieces === l.origPieces) continue;
+    const override: DishLineOverride = { position: l.position };
+    const grams = numberOf(l.grams);
+    const pieces = numberOf(l.pieces);
+    if (grams !== undefined) override.grams = grams;
+    if (pieces !== undefined) override.pieces = pieces;
+    lines.push(override);
+  }
+  const input: DishProductsInput = { meal, dish_id: form.dishId };
+  if (lines.length > 0) input.lines = lines;
+  return input;
+}
+
+/**
+ * Saves the open split form of (shown day, meal) with addLogDishProducts only; never a dish write.
+ * A refusal keeps the form as typed and saves nothing (all or none is the server's).
+ */
+export async function submitSplit(deps: LogDeps, state: LogState, meal: Meal): Promise<LogNext> {
+  const date = state.day.date;
+  const key = formKey(date, meal);
+  const form = state.splits?.[key] ?? EMPTY_SPLIT;
+  const add = deps.log.addLogDishProducts?.bind(deps.log);
+  if (!add) {
+    return { kind: "state", state: { ...state, error: shown({ code: "failed", reasons: [], message: null }) } };
+  }
+  const request = splitRequest(meal, form);
+  const r = await add(date, request);
+  if (r.kind === "unauthorized") return { kind: "unauthorized" };
+  if (r.kind === "ok") return reread(deps, withSplit(state, key, null), date);
+  if (r.kind === "failed") {
+    return { kind: "state", state: { ...state, error: shown({ code: "failed", reasons: [], message: r.message }) } };
+  }
+  // The index of a refused line is into the request's lines; map it back to the dish position.
+  const sent = request.lines ?? [];
+  const refused: Record<number, string> = {};
+  const reasons = [...r.error.reasons];
+  for (const l of r.lines) {
+    refused[sent[l.index]?.position ?? l.index] = l.reason;
+    if (!reasons.includes(l.reason)) reasons.push(l.reason);
+  }
+  const names = Object.keys(refused).map((p) => {
+    const position = Number(p);
+    const name = form.lines.find((l) => l.position === position)?.name;
+    return name !== undefined ? `Line ${position + 1} (${name})` : `Line ${position + 1}`;
+  });
+  const base = logErrorText({ ...r.error, reasons });
+  const error: ShownError = {
+    code: r.error.code,
+    reasons,
+    text: names.length > 0 ? `${names.join(", ")}: ${base}` : base,
+  };
+  return { kind: "state", state: { ...withSplit(state, key, { ...form, refused }), error } };
 }

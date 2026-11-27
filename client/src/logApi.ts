@@ -1,5 +1,5 @@
 // IF-001@1.5.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
-// confirmMealAsPlanned. addLogDishProducts comes in the next slice. Fetch and run id are injected.
+// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010). Fetch and run id are injected.
 // Types follow architecture/system/interfaces/IF-001/openapi-1.5.0.json.
 
 import type { FetchLike } from "./api";
@@ -49,12 +49,42 @@ export type LogDayResult = { kind: "ok"; day: LogDay } | Exclude<Problem, { kind
 export type LogEntryResult = { kind: "ok"; entry: LogEntry } | Problem;
 export type LogEntriesResult = { kind: "ok"; entries: LogEntry[] } | Problem;
 
+/** One override of a dish line by its position (DishProductsInput.lines). */
+export interface DishLineOverride {
+  position: number;
+  grams?: number;
+  pieces?: number;
+}
+
+export interface DishProductsInput {
+  meal: Meal;
+  dish_id: string;
+  /** Only the changed lines; a position not listed keeps the dish amount. */
+  lines?: DishLineOverride[];
+}
+
+/** A refused line of EntryInvalid: index into the request's lines, and the reason. */
+export interface LineRefusal {
+  index: number;
+  reason: string;
+}
+
+export type LogSplitResult =
+  | { kind: "ok"; entries: LogEntry[] }
+  | { kind: "refused"; error: PlanError; lines: LineRefusal[] }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string | null };
+
 export interface LogApi {
   getDayLog(date: string): Promise<LogDayResult>;
   addLogEntry(date: string, input: NewEntryInput): Promise<LogEntryResult>;
   changeLogEntry(date: string, entryId: string, amount: AmountInput): Promise<LogEntryResult>;
   removeLogEntry(date: string, entryId: string): Promise<RemoveResult>;
   confirmMealAsPlanned(date: string, meal: Meal): Promise<LogEntriesResult>;
+}
+
+export interface LogSplitApi {
+  addLogDishProducts(date: string, input: DishProductsInput): Promise<LogSplitResult>;
 }
 
 function parseLogEntry(raw: unknown): LogEntry | null {
@@ -87,6 +117,18 @@ function parseEntries(raw: unknown): LogEntry[] | null {
   return entries.some((e) => e === null) ? null : (entries as LogEntry[]);
 }
 
+// The refused lines of an EntryInvalid body; anything that is not {index, reason} is dropped.
+function refusedLines(raw: unknown): LineRefusal[] {
+  const out: LineRefusal[] = [];
+  if (!isRecord(raw) || !Array.isArray(raw.lines)) return out;
+  for (const l of raw.lines) {
+    if (isRecord(l) && typeof l.index === "number" && typeof l.reason === "string") {
+      out.push({ index: l.index, reason: l.reason });
+    }
+  }
+  return out;
+}
+
 type Sent = { status: number; body: unknown } | null;
 
 // What a reply that is not the expected success means.
@@ -97,7 +139,7 @@ function problem(r: Sent): Problem {
   return error ? { kind: "refused", error } : { kind: "failed", message: messageOf(r.body) };
 }
 
-export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi {
+export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi & LogSplitApi {
   async function send(method: string, path: string, body?: unknown): Promise<Sent> {
     try {
       const headers: Record<string, string> = { "X-Run-Id": newRunId() };
@@ -162,6 +204,17 @@ export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi
         return entries ? { kind: "ok", entries } : { kind: "failed", message: null };
       }
       return problem(r);
+    },
+
+    async addLogDishProducts(date, input) {
+      const r = await send("POST", `${day(date)}/dish-products`, input);
+      if (r && r.status === 201) {
+        const entries = parseEntries(r.body);
+        return entries ? { kind: "ok", entries } : { kind: "failed", message: null };
+      }
+      const p = problem(r);
+      if (p.kind !== "refused") return p;
+      return { kind: "refused", error: p.error, lines: r ? refusedLines(r.body) : [] };
     },
   };
 }

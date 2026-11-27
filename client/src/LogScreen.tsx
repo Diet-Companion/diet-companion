@@ -2,14 +2,18 @@ import { useEffect, useState } from "react";
 import { LogView } from "./LogView";
 import {
   changeAmount,
+  chooseSplitDish,
   confirmMeal,
   earlierDay,
   laterDay,
   openLog,
+  openSplit,
   removeEntry,
   setEdit,
   setForm,
+  setSplitLine,
   submitEntry,
+  submitSplit,
   type LogDeps,
   type LogNext,
   type LogState,
@@ -72,6 +76,20 @@ export function LogScreen(props: LogScreenProps) {
         onEarlier={() => void run((s) => earlierDay(deps, s))}
         onLater={() => void run((s) => laterDay(deps, s))}
         onBack={props.onBack}
+        onSplitOpen={(meal) =>
+          setPhase((p) => (p.name === "ready" ? { ...p, state: openSplit(p.state, meal) } : p))
+        }
+        onSplitDish={(meal, dishId) =>
+          setPhase((p) =>
+            p.name === "ready"
+              ? { ...p, state: chooseSplitDish(p.state, meal, p.catalogs.dishes.find((d) => d.id === dishId)) }
+              : p,
+          )
+        }
+        onSplitLine={(meal, position, values) =>
+          setPhase((p) => (p.name === "ready" ? { ...p, state: setSplitLine(p.state, meal, position, values) } : p))
+        }
+        onSplitSave={(meal) => void run((s) => submitSplit(deps, s, meal))}
       />
     );
   }

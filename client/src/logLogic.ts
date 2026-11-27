@@ -21,6 +21,9 @@ const LOG_REASON_TEXT: Record<string, string> = {
   amount_on_dish: "A dish is logged whole, without an amount. Nothing was saved.",
   piece_without_weight: "This product has no piece weight, so it cannot be logged in pieces. Nothing was saved.",
   subject_missing: "Choose a product or a dish. Nothing was saved.",
+  line_unknown: "A line of the dish was not found. Nothing was saved.",
+  dish_not_found: "This dish was not found. Nothing was saved.",
+  dish_not_selectable: "This dish cannot be logged. Nothing was saved.",
 };
 
 const LOG_CODE_TEXT: Record<string, string> = {
