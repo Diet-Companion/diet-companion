@@ -25,4 +25,11 @@ export class PostgresTargetStore implements TargetStore {
     );
     return saved.rows[0] as StoredRange;
   }
+
+  async earliestEffectiveFrom(): Promise<string | undefined> {
+    const found = await this.pool.query<{ earliest: string | null }>(
+      "SELECT to_char(MIN(effective_from), 'YYYY-MM-DD') AS earliest FROM target_ranges",
+    );
+    return found.rows[0]?.earliest ?? undefined;
+  }
 }

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { closedAtIso } from "./day-close.js";
 import { isDishSelectable, type DishStore } from "./dish-store.js";
 import { toDishResponse, type DishResponse } from "./dishes.js";
 import { DayClosedError, MEALS, isMeal, type Meal, type PlanStore, type PlanTx, type StoredEntry } from "./plan-store.js";
@@ -206,7 +207,7 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
   const notFound = (request: FastifyRequest, reply: FastifyReply): FastifyReply =>
     sendError(request, reply, 404, "entry.not_found", "No plan entry has this id on this day.");
 
-  // IF-001@1.5.0 getDayPlan: any valid date; reading a closed day works (ADR-019/C-002).
+  // IF-001@1.6.0 getDayPlan: any valid date; reading a closed day works (ADR-019/C-002); closed_at is null while open.
   app.get("/days/:date/plan", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return unauthorised(request, reply);
     const date = (request.params as { date: string }).date;
@@ -224,6 +225,7 @@ export function registerPlanRoutes(app: FastifyInstance, deps: PlanRouteDeps): v
       date,
       today,
       closed: day.closed,
+      closed_at: await closedAtIso(deps.plans, date),
       editable: !day.closed && isPlannable(date, today),
       meals,
     });

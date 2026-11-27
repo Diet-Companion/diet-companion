@@ -20,6 +20,8 @@ export interface TargetStore {
   rangeInForce(nutrient: TargetNutrient, date: string): Promise<StoredRange | undefined>;
   /** Inserts the row for (nutrient, effective_from) or overwrites it. Other rows are never touched (ADR-015/C-002). */
   save(range: StoredRange): Promise<StoredRange>;
+  /** The earliest effective_from of any saved range, or undefined when none is saved (first day of use, A-042). */
+  earliestEffectiveFrom(): Promise<string | undefined>;
 }
 
 export class InMemoryTargetStore implements TargetStore {
@@ -37,5 +39,13 @@ export class InMemoryTargetStore implements TargetStore {
   async save(range: StoredRange): Promise<StoredRange> {
     this.rows.set(`${range.nutrient}|${range.effective_from}`, { ...range });
     return { ...range };
+  }
+
+  async earliestEffectiveFrom(): Promise<string | undefined> {
+    let earliest: string | undefined;
+    for (const row of this.rows.values()) {
+      if (earliest === undefined || row.effective_from < earliest) earliest = row.effective_from;
+    }
+    return earliest;
   }
 }
