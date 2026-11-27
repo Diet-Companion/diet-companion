@@ -1,5 +1,5 @@
 // IF-001@1.6.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
-// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010). Fetch and run id are injected.
+// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010); closeDay (REQ-011). Fetch and run id are injected.
 // Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
@@ -56,6 +56,8 @@ type Problem =
 export type LogDayResult = { kind: "ok"; day: LogDay } | Exclude<Problem, { kind: "refused" }>;
 export type LogEntryResult = { kind: "ok"; entry: LogEntry } | Problem;
 export type LogEntriesResult = { kind: "ok"; entries: LogEntry[] } | Problem;
+/** closeDay: the closed day's log sheet, or a refusal (day.closed, close.day_out_of_range). */
+export type LogCloseResult = { kind: "ok"; day: LogDay } | Problem;
 
 /** One override of a dish line by its position (DishProductsInput.lines). */
 export interface DishLineOverride {
@@ -93,6 +95,10 @@ export interface LogApi {
 
 export interface LogSplitApi {
   addLogDishProducts(date: string, input: DishProductsInput): Promise<LogSplitResult>;
+}
+
+export interface LogCloseApi {
+  closeDay(date: string): Promise<LogCloseResult>;
 }
 
 function parseLogEntry(raw: unknown): LogEntry | null {
@@ -158,7 +164,7 @@ function problem(r: Sent): Problem {
   return error ? { kind: "refused", error } : { kind: "failed", message: messageOf(r.body) };
 }
 
-export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi & LogSplitApi {
+export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi & LogSplitApi & LogCloseApi {
   async function send(method: string, path: string, body?: unknown): Promise<Sent> {
     try {
       const headers: Record<string, string> = { "X-Run-Id": newRunId() };
@@ -234,6 +240,15 @@ export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi
       const p = problem(r);
       if (p.kind !== "refused") return p;
       return { kind: "refused", error: p.error, lines: r ? refusedLines(r.body) : [] };
+    },
+
+    async closeDay(date) {
+      const r = await send("POST", `/days/${encodeURIComponent(date)}/close`);
+      if (r && r.status === 200) {
+        const parsed = parseDay(r.body);
+        return parsed ? { kind: "ok", day: parsed } : { kind: "failed", message: null };
+      }
+      return problem(r);
     },
   };
 }

@@ -3,7 +3,15 @@
 
 import type { Api } from "./api";
 import type { Dish, DishApi } from "./dishApi";
-import type { DishLineOverride, DishProductsInput, LogApi, LogDay, LogEntry, LogSplitApi } from "./logApi";
+import type {
+  DishLineOverride,
+  DishProductsInput,
+  LogApi,
+  LogCloseApi,
+  LogDay,
+  LogEntry,
+  LogSplitApi,
+} from "./logApi";
 import { logErrorText, prevDate } from "./logLogic";
 import type { Meal, PlanError } from "./planApi";
 import { EMPTY_FORM, entryInput, formKey, nextDate, writeOutcome, type FormValues, type WriteOutcome } from "./planLogic";
@@ -13,7 +21,8 @@ import type { TargetsApi } from "./targetsApi";
 export { amountText };
 
 export interface LogDeps {
-  log: LogApi & Partial<LogSplitApi>;
+  /** closeDay is optional here; only the confirm step of the close control calls it (REQ-011). */
+  log: LogApi & Partial<LogSplitApi> & Partial<LogCloseApi>;
   targets: Pick<TargetsApi, "getTargetRanges">;
   products: Pick<Api, "listProducts">;
   /** Read only: the dish split never writes a dish (REQ-014/AC-010). */
