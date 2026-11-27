@@ -13,6 +13,18 @@ export interface CloseRouteDeps extends PlanRouteDeps {
   targets: TargetStore;
 }
 
+/** Page size of listDays (IF-001@1.6.0, A-044). */
+const DEFAULT_LIMIT = 31;
+const MAX_LIMIT = 100;
+
+/** The limit query value as a number, or undefined when it is not an integer from 1 to 100. */
+function parseLimit(raw: unknown): number | undefined {
+  if (raw === undefined) return DEFAULT_LIMIT;
+  if (typeof raw !== "string" || !/^\d{1,3}$/.test(raw)) return undefined;
+  const value = Number(raw);
+  return value >= 1 && value <= MAX_LIMIT ? value : undefined;
+}
+
 /**
  * The ranges in force on a date, through the one shared function (ADR-015/C-003). A nutrient that has no range
  * gets no row (A-045).
@@ -82,5 +94,43 @@ export function registerCloseRoutes(app: FastifyInstance, deps: CloseRouteDeps):
       }
     }
     return reply.code(200).send({ first_day_of_use: first, before, days });
+  });
+
+  // IF-001@1.6.0 listDays (REQ-016/AC-001, AC-004, AC-005): days newest first from the day before `before`
+  // (default tomorrow) back to the first day of use, open, closed and empty days alike. One closedDays read per page.
+  app.get("/days", async (request, reply) => {
+    if (!(await requireOwner(deps, request))) return unauthorised(request, reply);
+    const query = request.query as { before?: unknown; limit?: unknown };
+    const today = todayIn(clock(), deps.timeZone);
+    const tomorrow = nextDay(today);
+    let before = tomorrow;
+    if (query.before !== undefined) {
+      if (typeof query.before !== "string" || !isCalendarDate(query.before)) {
+        return badRequest(request, reply, "The before date is not a valid calendar date.");
+      }
+      if (query.before > tomorrow) return badRequest(request, reply, "The before date is after tomorrow.");
+      before = query.before;
+    }
+    const limit = parseLimit(query.limit);
+    if (limit === undefined) return badRequest(request, reply, "The limit must be a whole number from 1 to 100.");
+
+    const first = await firstDayOfUse(deps.targets, deps.closer, today);
+    const last = previousDay(before);
+    if (last < first) return reply.code(200).send({ first_day_of_use: first, items: [], next_before: null });
+
+    let oldest = last;
+    for (let count = 1; count < limit && oldest > first; count++) oldest = previousDay(oldest);
+
+    const closed = new Set(await deps.closer.closedDays(oldest, before));
+    const items: { date: string; state: "open" | "closed"; open_past: boolean; closed_at: string | null }[] = [];
+    for (let day = last; day >= oldest; day = previousDay(day)) {
+      if (closed.has(day)) {
+        const at = await deps.closer.closedAt(day);
+        items.push({ date: day, state: "closed", open_past: false, closed_at: at ? at.toISOString() : null });
+      } else {
+        items.push({ date: day, state: "open", open_past: day < today, closed_at: null });
+      }
+    }
+    return reply.code(200).send({ first_day_of_use: first, items, next_before: oldest > first ? oldest : null });
   });
 }
