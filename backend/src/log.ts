@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { closedAtIso } from "./day-close.js";
 import { isDishSelectable } from "./dish-store.js";
 import { DayClosedError, MEALS, isMeal, type Meal, type PlanTx, type StoredEntry } from "./plan-store.js";
 import {
@@ -115,7 +116,31 @@ export function isLoggable(date: string, today: string): boolean {
   return date <= today;
 }
 
-/** The routes of the meal log (CMP-002, IF-001@1.5.0). Log rows are kind = 'log' of the plan store (ADR-017/C-001). */
+/**
+ * The log sheet of a day (IF-001@1.6.0 DaySheet of kind log, without the per-nutrient result, which a later slice adds).
+ * Used by getDayLog and by closeDay. has_plan says which meals have a plan (REQ-014/AC-013).
+ */
+export async function buildLogSheet(deps: PlanRouteDeps, date: string, today: string) {
+  const log = await deps.plans.read(date, "log");
+  const plan = await deps.plans.read(date);
+  const meals = [];
+  for (const meal of MEALS) {
+    const entries = [];
+    for (const entry of log.entries.filter((e) => e.meal === meal)) entries.push(await toEntryResponse(deps, entry));
+    meals.push({ meal, has_plan: plan.entries.some((e) => e.meal === meal), entries });
+  }
+  return {
+    kind: "log",
+    date,
+    today,
+    closed: log.closed,
+    closed_at: await closedAtIso(deps.plans, date),
+    editable: !log.closed && isLoggable(date, today),
+    meals,
+  };
+}
+
+/** The routes of the meal log (CMP-002, IF-001@1.6.0). Log rows are kind = 'log' of the plan store (ADR-017/C-001). */
 export function registerLogRoutes(app: FastifyInstance, deps: PlanRouteDeps): void {
   const clock = deps.clock ?? ((): Date => new Date());
   const unauthorised = (request: FastifyRequest, reply: FastifyReply): FastifyReply =>
@@ -134,28 +159,12 @@ export function registerLogRoutes(app: FastifyInstance, deps: PlanRouteDeps): vo
     entries: await Promise.all(entries.map((entry) => toEntryResponse(deps, entry))),
   });
 
-  // IF-001@1.5.0 getDayLog: any valid date; has_plan says which meals have a plan (REQ-014/AC-013).
+  // IF-001@1.6.0 getDayLog: any valid date; has_plan says which meals have a plan (REQ-014/AC-013); closed_at is null while open.
   app.get("/days/:date/log", async (request, reply) => {
     if (!(await requireOwner(deps, request))) return unauthorised(request, reply);
     const date = (request.params as { date: string }).date;
     if (!isCalendarDate(date)) return badRequest(request, reply, "The date is not a valid calendar date.");
-    const today = todayIn(clock(), deps.timeZone);
-    const log = await deps.plans.read(date, "log");
-    const plan = await deps.plans.read(date);
-    const meals = [];
-    for (const meal of MEALS) {
-      const entries = [];
-      for (const entry of log.entries.filter((e) => e.meal === meal)) entries.push(await toEntryResponse(deps, entry));
-      meals.push({ meal, has_plan: plan.entries.some((e) => e.meal === meal), entries });
-    }
-    return reply.code(200).send({
-      kind: "log",
-      date,
-      today,
-      closed: log.closed,
-      editable: !log.closed && isLoggable(date, today),
-      meals,
-    });
+    return reply.code(200).send(await buildLogSheet(deps, date, todayIn(clock(), deps.timeZone)));
   });
 
   // IF-001@1.5.0 addLogEntry. Check order: date and body, window, day open, then the entry. No limit against the plan (REQ-014/AC-006).

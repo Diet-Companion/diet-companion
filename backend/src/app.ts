@@ -2,6 +2,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import { randomUUID } from "node:crypto";
 import { createAuth, type AuthDeps } from "./auth/auth.js";
+import { registerCloseRoutes } from "./close.js";
+import { isDayCloser, type DayCloser } from "./day-close.js";
 import type { DishStore } from "./dish-store.js";
 import { registerDishRoutes } from "./dishes.js";
 import { InMemoryDishStore } from "./in-memory-dish-store.js";
@@ -39,6 +41,11 @@ export interface AppOptions extends Partial<ProductRouteDeps> {
   targetStore?: TargetStore;
   /** The day plan and log storage seam (IF-001@1.5.0 plan and log routes). Default: an in-memory store. */
   planStore?: PlanStore;
+  /**
+   * The closing storage seam (IF-001@1.6.0 closeDay, getOpenDays). Default: the plan store, when it is one.
+   * Without one, the closing routes are not registered and the sheets show closed_at null.
+   */
+  dayCloser?: DayCloser;
   /**
    * The Owner's IANA time zone (ADR-016). The production entry always passes the parsed OWNER_TIME_ZONE;
    * the UTC default is for tests that do not care about the day boundary.
@@ -108,15 +115,17 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   });
   const timeZone = options.timeZone ?? "UTC";
   // IF-001@1.4.0 target range operations.
+  const targets = options.targetStore ?? new InMemoryTargetStore();
   registerTargetRoutes(app, {
-    targets: options.targetStore ?? new InMemoryTargetStore(),
+    targets,
     isOwner,
     clock: options.clock,
     timeZone,
   });
   // IF-001@1.5.0 day plan and meal log operations share one store (ADR-017).
+  const plans = options.planStore ?? new InMemoryPlanStore(randomUUID);
   const planDeps = {
-    plans: options.planStore ?? new InMemoryPlanStore(randomUUID),
+    plans,
     products,
     dishes,
     isOwner,
@@ -125,6 +134,9 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   };
   registerPlanRoutes(app, planDeps);
   registerLogRoutes(app, planDeps);
+  // IF-001@1.6.0 closeDay and getOpenDays (ADR-020).
+  const closer = options.dayCloser ?? (isDayCloser(plans) ? plans : undefined);
+  if (closer) registerCloseRoutes(app, { ...planDeps, closer, targets });
 
   return app;
 }
