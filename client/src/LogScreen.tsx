@@ -7,14 +7,17 @@ import {
   confirmMeal,
   earlierDay,
   laterDay,
+  moreDays,
   openLog,
   openSplit,
+  pickDay,
   removeEntry,
   setEdit,
   setForm,
   setSplitLine,
   submitEntry,
   submitSplit,
+  toggleDayList,
   type LogDeps,
   type LogNext,
   type LogState,
@@ -90,6 +93,12 @@ export function LogScreen(props: LogScreenProps) {
         onLater={() => {
           setConfirmingClose(false);
           void run((s) => laterDay(deps, s));
+        }}
+        onDays={() => void run((s) => toggleDayList(deps, s))}
+        onDayMore={() => void run((s) => moreDays(deps, s))}
+        onDayPick={(date) => {
+          setConfirmingClose(false);
+          void run((s) => pickDay(deps, s, date));
         }}
         onBack={props.onBack}
         onSplitOpen={(meal) =>

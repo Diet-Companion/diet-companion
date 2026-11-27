@@ -1,5 +1,5 @@
 // IF-001@1.6.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
-// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010); closeDay (REQ-011). Fetch and run id are injected.
+// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010); closeDay (REQ-011); listDays (REQ-016). Fetch and run id are injected.
 // Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
@@ -48,12 +48,28 @@ export interface LogDay {
   result?: DaySheetResult;
 }
 
+/** One day of the day list, as the server sent it (REQ-016/AC-004, AC-005). Never worked out from dates. */
+export interface DayListItem {
+  date: string;
+  state: "open" | "closed";
+  openPast: boolean;
+  closedAt: string | null;
+}
+
+/** One page of listDays: the days newest first, and the before value of the next page (null at the end). */
+export interface DayListPage {
+  firstDayOfUse: string | null;
+  items: DayListItem[];
+  nextBefore: string | null;
+}
+
 type Problem =
   | { kind: "refused"; error: PlanError }
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
 
 export type LogDayResult = { kind: "ok"; day: LogDay } | Exclude<Problem, { kind: "refused" }>;
+export type LogDayListResult = { kind: "ok"; list: DayListPage } | Exclude<Problem, { kind: "refused" }>;
 export type LogEntryResult = { kind: "ok"; entry: LogEntry } | Problem;
 export type LogEntriesResult = { kind: "ok"; entries: LogEntry[] } | Problem;
 /** closeDay: the closed day's log sheet, or a refusal (day.closed, close.day_out_of_range). */
@@ -101,6 +117,11 @@ export interface LogCloseApi {
   closeDay(date: string): Promise<LogCloseResult>;
 }
 
+/** listDays: GET /days?before=D&limit=N. The first page sends no before (REQ-016/AC-001). */
+export interface LogListApi {
+  listDays(before?: string, limit?: number): Promise<LogDayListResult>;
+}
+
 function parseLogEntry(raw: unknown): LogEntry | null {
   const base = parseEntry(raw);
   if (!base || !isRecord(raw)) return null;
@@ -136,6 +157,24 @@ function parseDay(raw: unknown): LogDay | null {
   };
 }
 
+function parseDayListItem(raw: unknown): DayListItem | null {
+  if (!isRecord(raw) || typeof raw.date !== "string") return null;
+  if (raw.state !== "open" && raw.state !== "closed") return null;
+  if (typeof raw.open_past !== "boolean") return null;
+  if (raw.closed_at !== null && typeof raw.closed_at !== "string") return null;
+  return { date: raw.date, state: raw.state, openPast: raw.open_past, closedAt: raw.closed_at };
+}
+
+function parseDayList(raw: unknown): DayListPage | null {
+  if (!isRecord(raw) || !Array.isArray(raw.items)) return null;
+  if (raw.next_before !== null && typeof raw.next_before !== "string") return null;
+  const first = raw.first_day_of_use ?? null;
+  if (first !== null && typeof first !== "string") return null;
+  const items = raw.items.map(parseDayListItem);
+  if (items.some((i) => i === null)) return null;
+  return { firstDayOfUse: first, items: items as DayListItem[], nextBefore: raw.next_before };
+}
+
 function parseEntries(raw: unknown): LogEntry[] | null {
   if (!isRecord(raw) || !Array.isArray(raw.entries)) return null;
   const entries = raw.entries.map(parseLogEntry);
@@ -164,7 +203,10 @@ function problem(r: Sent): Problem {
   return error ? { kind: "refused", error } : { kind: "failed", message: messageOf(r.body) };
 }
 
-export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi & LogSplitApi & LogCloseApi {
+export function createLogApi(
+  fetchFn: FetchLike,
+  newRunId: () => string,
+): LogApi & LogSplitApi & LogCloseApi & LogListApi {
   async function send(method: string, path: string, body?: unknown): Promise<Sent> {
     try {
       const headers: Record<string, string> = { "X-Run-Id": newRunId() };
@@ -203,6 +245,19 @@ export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi
       if (r && r.status === 200) {
         const parsed = parseDay(r.body);
         return parsed ? { kind: "ok", day: parsed } : { kind: "failed", message: null };
+      }
+      const p = problem(r);
+      return p.kind === "refused" ? { kind: "failed", message: p.error.message } : p;
+    },
+
+    async listDays(before, limit) {
+      const query: string[] = [];
+      if (before !== undefined) query.push(`before=${encodeURIComponent(before)}`);
+      if (limit !== undefined) query.push(`limit=${limit}`);
+      const r = await send("GET", query.length > 0 ? `/days?${query.join("&")}` : "/days");
+      if (r && r.status === 200) {
+        const list = parseDayList(r.body);
+        return list ? { kind: "ok", list } : { kind: "failed", message: null };
       }
       const p = problem(r);
       return p.kind === "refused" ? { kind: "failed", message: p.error.message } : p;
