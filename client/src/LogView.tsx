@@ -1,4 +1,5 @@
 import type { Product } from "./api";
+import { canClose } from "./closeLogic";
 import type { Dish } from "./dishApi";
 import { EntryFields } from "./EntryFields";
 import type { LogEntry, LogMeal } from "./logApi";
@@ -28,6 +29,11 @@ export interface LogViewProps {
   onSplitDish?: (meal: Meal, dishId: string) => void;
   onSplitLine?: (meal: Meal, position: number, values: { grams: string; pieces: string }) => void;
   onSplitSave?: (meal: Meal) => void;
+  /** Close control (REQ-011/AC-001, AC-002): asks first; only confirm closes the day. */
+  confirmingClose?: boolean;
+  onClose?: () => void;
+  onCloseConfirm?: () => void;
+  onCloseCancel?: () => void;
 }
 
 function subjectText(s: PlanSubject): string {
@@ -131,6 +137,29 @@ function MealBlock(props: { meal: Meal; logMeal: LogMeal | undefined; view: LogV
   );
 }
 
+// The close control: shown on an open day that is not after the server's today (REQ-011/AC-001).
+function CloseControl(props: LogViewProps) {
+  if (!canClose(props.state.day)) return null;
+  if (!props.confirmingClose) {
+    return (
+      <button type="button" disabled={props.busy} onClick={() => props.onClose?.()} data-testid="log-close">
+        Close this day
+      </button>
+    );
+  }
+  return (
+    <div role="group" aria-label="Close this day">
+      <p>Close this day? A closed day cannot be reopened.</p>
+      <button type="button" disabled={props.busy} onClick={() => props.onCloseConfirm?.()} data-testid="log-close-confirm">
+        Yes, close it
+      </button>
+      <button type="button" disabled={props.busy} onClick={() => props.onCloseCancel?.()} data-testid="log-close-cancel">
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 export function LogView(props: LogViewProps) {
   const { state } = props;
   const { day } = state;
@@ -155,7 +184,8 @@ export function LogView(props: LogViewProps) {
           Later day
         </button>
       ) : null}
-      {day.closed ? <p>This day is closed.</p> : null}
+      {day.closed ? <p data-testid="log-closed-mark">This day is closed.</p> : null}
+      <CloseControl {...props} />
       <DayResultList prefix="log" result={day.result} />
       {MEALS.map((meal) => (
         <MealBlock key={meal} meal={meal} logMeal={day.meals.find((m) => m.meal === meal)} view={props} />

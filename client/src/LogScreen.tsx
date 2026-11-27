@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { confirmClose } from "./closeLogic";
 import { LogView } from "./LogView";
 import {
   changeAmount,
@@ -33,6 +34,8 @@ export function LogScreen(props: LogScreenProps) {
   const { deps, onUnauthorized } = props;
   const [phase, setPhase] = useState<Phase>({ name: "loading" });
   const [busy, setBusy] = useState(false);
+  // The close prompt is only screen state: asking and cancelling call nothing (REQ-011/AC-002).
+  const [confirmingClose, setConfirmingClose] = useState(false);
 
   async function load() {
     setPhase({ name: "loading" });
@@ -65,6 +68,13 @@ export function LogScreen(props: LogScreenProps) {
         products={phase.catalogs.products}
         dishes={phase.catalogs.dishes}
         busy={busy}
+        confirmingClose={confirmingClose}
+        onClose={() => setConfirmingClose(true)}
+        onCloseCancel={() => setConfirmingClose(false)}
+        onCloseConfirm={() => {
+          setConfirmingClose(false);
+          void run((s) => confirmClose(deps, s));
+        }}
         onForm={(meal, values) =>
           setPhase((p) => (p.name === "ready" ? { ...p, state: setForm(p.state, meal, values) } : p))
         }
@@ -73,8 +83,14 @@ export function LogScreen(props: LogScreenProps) {
         onChange={(entry) => void run((s) => changeAmount(deps, s, entry))}
         onRemove={(entry) => void run((s) => removeEntry(deps, s, entry))}
         onConfirm={(meal) => void run((s) => confirmMeal(deps, s, meal))}
-        onEarlier={() => void run((s) => earlierDay(deps, s))}
-        onLater={() => void run((s) => laterDay(deps, s))}
+        onEarlier={() => {
+          setConfirmingClose(false);
+          void run((s) => earlierDay(deps, s));
+        }}
+        onLater={() => {
+          setConfirmingClose(false);
+          void run((s) => laterDay(deps, s));
+        }}
         onBack={props.onBack}
         onSplitOpen={(meal) =>
           setPhase((p) => (p.name === "ready" ? { ...p, state: openSplit(p.state, meal) } : p))

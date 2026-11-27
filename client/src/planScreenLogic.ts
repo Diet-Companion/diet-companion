@@ -3,12 +3,13 @@
 
 import type { Api, Product } from "./api";
 import type { Dish, DishApi } from "./dishApi";
-import type { DayResult, DaySheet, Meal, PlanApi, PlanEntry, PlanError } from "./planApi";
+import type { DayResult, DaySheet, Meal, PlanApi, PlanEntry, PlanError, PlanOpenApi } from "./planApi";
 import { EMPTY_FORM, entryInput, errorText, formKey, nextDate, writeOutcome, type FormValues } from "./planLogic";
 import type { TargetsApi } from "./targetsApi";
 
 export interface PlanDeps {
-  plan: PlanApi;
+  /** getOpenDays feeds the close reminder (REQ-011); it is optional and never blocks planning. */
+  plan: PlanApi & Partial<PlanOpenApi>;
   targets: Pick<TargetsApi, "getTargetRanges">;
   products: Pick<Api, "listProducts">;
   dishes: Pick<DishApi, "listDishes">;

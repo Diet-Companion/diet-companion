@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { readReminders } from "./closeLogic";
 import { PlanView } from "./PlanView";
 import {
   changeAmount,
@@ -26,6 +27,8 @@ export function PlanScreen(props: PlanScreenProps) {
   const { deps, onUnauthorized } = props;
   const [phase, setPhase] = useState<Phase>({ name: "loading" });
   const [busy, setBusy] = useState(false);
+  // Open days before each shown day, as the server sends them (REQ-011/AC-004). Never blocks planning.
+  const [reminders, setReminders] = useState<Record<string, string[]>>({});
 
   async function load() {
     setPhase({ name: "loading" });
@@ -51,6 +54,18 @@ export function PlanScreen(props: PlanScreenProps) {
     void load();
   }, []);
 
+  const datesKey = phase.name === "ready" ? phase.state.days.map((d) => d.date).join(",") : "";
+  useEffect(() => {
+    if (datesKey === "") return undefined;
+    let live = true;
+    void readReminders(deps.plan, datesKey.split(",")).then((found) => {
+      if (live) setReminders(found);
+    });
+    return () => {
+      live = false;
+    };
+  }, [datesKey]);
+
   if (phase.name === "ready") {
     return (
       <PlanView
@@ -58,6 +73,7 @@ export function PlanScreen(props: PlanScreenProps) {
         products={phase.catalogs.products}
         dishes={phase.catalogs.dishes}
         busy={busy}
+        reminders={reminders}
         onForm={(date, meal, values) =>
           setPhase((p) => (p.name === "ready" ? { ...p, state: setForm(p.state, date, meal, values) } : p))
         }
