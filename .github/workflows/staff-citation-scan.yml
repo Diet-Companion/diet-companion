@@ -1,0 +1,135 @@
+# Staff citation scan (S-DEV-016; the blocking, test-side part of S-BA-021 and S-ARCH-030). No model.
+#
+# HUMAN-AUTHORED. Only the human edits and merges this file (S-GEN-025, G2).
+#
+# Runs on every PR, human or agent (S-DEV-027). It posts one commit status, `staff/citation-scan`, on the PR
+# head: make it required in the ruleset. A PR fails when a `cites:` token on a line it adds to a test file
+# (code-map unit_tests, QA test-map layer paths) names an S-DEV-016 ID that is missing or retired.
+# Tokens in other forms are listed in the summary and don't fail it.
+#
+# Runs from the BASE branch (pull_request_target), so a PR can't change the check that gates it. The maps,
+# requirements and architecture come from the base commit. The PR head is fetched only as git data and never
+# executed. Writes: the status, and one summary comment when it fails (updated in place).
+name: staff-citation-scan
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+env:
+  # Pinned staff commit (S-GEN-016).
+  STAFF_SHA: 5695a65cb214eb5d78a481e75092456e8f46a05a
+  STAFF_REPO: Diet-Companion/staff
+  STATUS_CONTEXT: staff/citation-scan
+  MARKER: "<!-- staff-citation-scan:v1 -->"
+  PR: ${{ github.event.pull_request.number }}
+
+# The latest event per PR wins; an older run's status would be stale anyway.
+concurrency:
+  group: staff-citation-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  citation-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write   # the one summary comment
+      statuses: write
+    steps:
+      - name: Check out staff at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.STAFF_REPO }}
+          ref: ${{ env.STAFF_SHA }}
+          path: staff
+          persist-credentials: false
+
+      - name: Resolve the PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          read -r head_sha base_sha head_repo state < <(gh api "repos/$REPO/pulls/$PR" \
+            --jq '[.head.sha, .base.sha, .head.repo.full_name, .state] | @tsv')
+          echo "$head_sha$base_sha" | grep -Eq '^[0-9a-f]{80}$' || { echo "::error::unexpected SHAs"; exit 1; }
+          [ "$state" = open ] || { echo "PR is not open; skipping."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          {
+            echo "run=true"
+            echo "head_sha=$head_sha"
+            echo "base_sha=$base_sha"
+            echo "fork=$([ "$head_repo" = "$REPO" ] && echo false || echo true)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fork PRs are not scanned
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.fork == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context="$STATUS_CONTEXT" \
+            -f description="The citation scan runs on branches of this repo only" --silent
+          exit 1
+
+      # Full history of the head, so the merge base and the base commit are reachable. Data only: nothing in it runs.
+      - name: Check out the PR head (data, never executed)
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.fork == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.fork == 'false'
+        with:
+          python-version: "3.12"
+
+      - name: Run the scan, post the status and the summary
+        if: steps.pr.outputs.run == 'true' && steps.pr.outputs.fork == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Actions runs steps with bash -e. Turn it off, so the scan's exit code 1 (a failed citation)
+          # still reaches the status and the summary below.
+          set +e
+          set -uo pipefail
+          python -m pip install -q --no-deps --only-binary ':all:' -r staff/harness/requirements.txt || exit 1
+          work="$RUNNER_TEMP/citations"; mkdir -p "$work"
+          export STAFF_REASON_FILE="$work/reason"
+          desc=$(python staff/harness/citation_scan.py --repo head --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --out "$work/result.json" --summary "$work/summary.md")
+          rc=$?
+          case "$rc" in
+            0) state=success ;;
+            1) state=failure ;;
+            *) state=error; desc="Citation scan error: $(cat "$work/reason" 2>/dev/null || echo unknown)" ;;
+          esac
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state="$state" -f context="$STATUS_CONTEXT" \
+            -f description="${desc:0:140}" -f target_url="$RUN_URL" --silent
+          echo "status $STATUS_CONTEXT: $state ($desc)"
+          if [ -s "$work/summary.md" ]; then
+            cat "$work/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            # One summary comment per PR, updated in place; posted only once the scan has failed.
+            existing=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\")))][0].id // empty" | head -n 1)
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$work/summary.md" --silent
+            elif [ "$rc" -eq 1 ]; then
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -F "body=@$work/summary.md" --silent
+            fi
+          fi
+          # The verdict is the staff/citation-scan status, the required one. The job itself fails only on
+          # a harness error.
+          [ "$rc" -le 1 ] || exit "$rc"

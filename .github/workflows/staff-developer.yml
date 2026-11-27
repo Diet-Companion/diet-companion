@@ -69,7 +69,7 @@ permissions: {}
 env:
   # Pinned staff commit (S-GEN-016). The orchestrator re-pins this after the staff harness PR
   # merges, and later to a release tag's commit.
-  STAFF_SHA: 3a4f630dac62216acfe5c7a47e8d49899ce1a2a0
+  STAFF_SHA: 5695a65cb214eb5d78a481e75092456e8f46a05a
   STAFF_REPO: Diet-Companion/staff
   CLAUDE_CODE_VERSION: 2.1.329
   DEVELOPER_BOT_LOGIN: diet-companion-engineering[bot]
@@ -865,6 +865,7 @@ jobs:
       REASON: ${{ needs.read.outputs.reason }}
       STAGE: ${{ needs.read.outputs.stage || '1' }}
       PR_NUMBER: ${{ needs.publish.outputs.pr }}
+      OPEN_PR: ${{ needs.gate.outputs.pr }}   # the agent PR a review or check round works on
       REPO: ${{ github.repository }}
       ISSUE: ${{ needs.gate.outputs.issue }}
       ROUND: ${{ needs.gate.outputs.round }}
@@ -939,6 +940,7 @@ jobs:
                                                          --patch-artifact "developer-patch-$RUN_ID")
             [ -s "$WORK/sandbox/sandbox.json" ] && extra+=(--sandbox "$WORK/sandbox/sandbox.json")
             case "$PR_NUMBER" in ''|*[!0-9]*) ;; *) extra+=(--pr-number "$PR_NUMBER") ;; esac
+            case "$OPEN_PR" in ''|*[!0-9]*) ;; *) extra+=(--open-pr "$OPEN_PR") ;; esac
             python3 staff/harness/render_developer.py render --in "$WORK/validated.json" \
               --meta "$WORK/dev-meta.json" "${extra[@]}" "${footer[@]}" && rendered=true
           fi
