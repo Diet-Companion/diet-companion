@@ -124,19 +124,22 @@ export function buildApp(options: AppOptions = {}): FastifyInstance {
   });
   // IF-001@1.5.0 day plan and meal log operations share one store (ADR-017).
   const plans = options.planStore ?? new InMemoryPlanStore(randomUUID);
+  // IF-001@1.6.0 closeDay and getOpenDays (ADR-020). The sheets read the ranges in force through targets and the
+  // stored ranges of a closed day through the closer (ADR-015/C-004).
+  const closer = options.dayCloser ?? (isDayCloser(plans) ? plans : undefined);
   const planDeps = {
     plans,
     products,
     dishes,
+    targets,
+    closer,
     isOwner,
     clock: options.clock,
     timeZone,
   };
   registerPlanRoutes(app, planDeps);
   registerLogRoutes(app, planDeps);
-  // IF-001@1.6.0 closeDay and getOpenDays (ADR-020).
-  const closer = options.dayCloser ?? (isDayCloser(plans) ? plans : undefined);
-  if (closer) registerCloseRoutes(app, { ...planDeps, closer, targets });
+  if (closer) registerCloseRoutes(app, { ...planDeps, closer });
 
   return app;
 }

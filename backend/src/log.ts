@@ -19,6 +19,7 @@ import {
 } from "./plan.js";
 import { isCalendarDate } from "./targets.js";
 import { todayIn } from "./today.js";
+import { buildSheetParts } from "./totals.js";
 
 class PlanEmpty extends Error {}
 class LogNotEmpty extends Error {}
@@ -117,17 +118,19 @@ export function isLoggable(date: string, today: string): boolean {
 }
 
 /**
- * The log sheet of a day (IF-001@1.6.0 DaySheet of kind log, without the per-nutrient result, which a later slice adds).
- * Used by getDayLog and by closeDay. has_plan says which meals have a plan (REQ-014/AC-013).
+ * The log sheet of a day (IF-001@1.6.0 DaySheet of kind log). Used by getDayLog and by closeDay.
+ * has_plan says which meals have a plan (REQ-014/AC-013). The meal totals and the result come from log entries only
+ * (REQ-010/AC-007); a closed day uses its stored ranges (REQ-010/AC-014).
  */
 export async function buildLogSheet(deps: PlanRouteDeps, date: string, today: string) {
   const log = await deps.plans.read(date, "log");
   const plan = await deps.plans.read(date);
+  const parts = await buildSheetParts(deps, date, log.entries, log.closed);
   const meals = [];
   for (const meal of MEALS) {
     const entries = [];
     for (const entry of log.entries.filter((e) => e.meal === meal)) entries.push(await toEntryResponse(deps, entry));
-    meals.push({ meal, has_plan: plan.entries.some((e) => e.meal === meal), entries });
+    meals.push({ meal, has_plan: plan.entries.some((e) => e.meal === meal), entries, totals: parts.meals[meal] });
   }
   return {
     kind: "log",
@@ -137,6 +140,7 @@ export async function buildLogSheet(deps: PlanRouteDeps, date: string, today: st
     closed_at: await closedAtIso(deps.plans, date),
     editable: !log.closed && isLoggable(date, today),
     meals,
+    result: parts.result,
   };
 }
 
