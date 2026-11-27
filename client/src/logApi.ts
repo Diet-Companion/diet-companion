@@ -1,16 +1,20 @@
-// IF-001@1.5.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
+// IF-001@1.6.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
 // confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010). Fetch and run id are injected.
-// Types follow architecture/system/interfaces/IF-001/openapi-1.5.0.json.
+// Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
 import {
   isMeal,
   isRecord,
   messageOf,
+  parseDayResult,
   parseEntry,
+  parseMealTotals,
   refusal,
   type AmountInput,
+  type DaySheetResult,
   type Meal,
+  type MealTotals,
   type NewEntryInput,
   type PlanEntry,
   type PlanError,
@@ -30,6 +34,8 @@ export interface LogMeal {
   /** True when the plan of the day has entries for the meal (REQ-014/AC-013). */
   hasPlan: boolean;
   entries: LogEntry[];
+  /** Meal totals as the server sent them (REQ-010/AC-013); present when the response has them. */
+  totals?: MealTotals;
 }
 
 export interface LogDay {
@@ -38,6 +44,8 @@ export interface LogDay {
   closed: boolean;
   editable: boolean;
   meals: LogMeal[];
+  /** The log sheet's day result as the server sent it (REQ-010/AC-007); present when the response has it. */
+  result?: DaySheetResult;
 }
 
 type Problem =
@@ -101,14 +109,25 @@ function parseLogEntry(raw: unknown): LogEntry | null {
 function parseDay(raw: unknown): LogDay | null {
   if (!isRecord(raw) || typeof raw.date !== "string" || typeof raw.today !== "string") return null;
   if (typeof raw.closed !== "boolean" || typeof raw.editable !== "boolean" || !Array.isArray(raw.meals)) return null;
+  const result = parseDayResult(raw.result);
+  if (result === null) return null;
   const meals: LogMeal[] = [];
   for (const m of raw.meals) {
     if (!isRecord(m) || !isMeal(m.meal) || typeof m.has_plan !== "boolean" || !Array.isArray(m.entries)) return null;
     const entries = m.entries.map(parseLogEntry);
     if (entries.some((e) => e === null)) return null;
-    meals.push({ meal: m.meal, hasPlan: m.has_plan, entries: entries as LogEntry[] });
+    const totals = parseMealTotals(m.totals);
+    if (totals === null) return null;
+    meals.push({ meal: m.meal, hasPlan: m.has_plan, entries: entries as LogEntry[], ...(totals ? { totals } : {}) });
   }
-  return { date: raw.date, today: raw.today, closed: raw.closed, editable: raw.editable, meals };
+  return {
+    date: raw.date,
+    today: raw.today,
+    closed: raw.closed,
+    editable: raw.editable,
+    meals,
+    ...(result ? { result } : {}),
+  };
 }
 
 function parseEntries(raw: unknown): LogEntry[] | null {

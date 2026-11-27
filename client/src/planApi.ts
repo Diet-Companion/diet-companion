@@ -1,5 +1,5 @@
-// IF-001@1.5.0 plan operations (REQ-013): getDayPlan, addPlanEntry, changePlanEntry, removePlanEntry.
-// Fetch and run id are injected. Types follow architecture/system/interfaces/IF-001/openapi-1.5.0.json.
+// IF-001@1.6.0 plan operations (REQ-013): getDayPlan, addPlanEntry, changePlanEntry, removePlanEntry.
+// Fetch and run id are injected. Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
 
@@ -23,9 +23,37 @@ export interface PlanEntry {
   pieces: number | null;
 }
 
+/** Whole-number totals of one meal, as the server sends them (ADR-021). Never computed in the client. */
+export interface MealTotals {
+  calories: number;
+  protein: number;
+  fat: number;
+}
+
+export type NutrientStatus = "green" | "yellow" | "red" | "no_range";
+
+/** One nutrient of a day result (IF-001 NutrientResult), shown as given (ADR-021). */
+export interface NutrientResult {
+  nutrient: "calories" | "protein" | "fat";
+  unit: "kcal" | "g";
+  total: number;
+  minimum: number | null;
+  maximum: number | null;
+  status: NutrientStatus;
+  signed_number: string | null;
+}
+
+/** The day result of IF-001 (DayResult). Named DaySheetResult here: DayResult is the outcome of getDayPlan. */
+export interface DaySheetResult {
+  ranges_source: "in_force" | "closed_copy";
+  nutrients: NutrientResult[];
+}
+
 export interface MealSheet {
   meal: Meal;
   entries: PlanEntry[];
+  /** Present when the server sent it. */
+  totals?: MealTotals;
 }
 
 export interface DaySheet {
@@ -34,6 +62,8 @@ export interface DaySheet {
   closed: boolean;
   editable: boolean;
   meals: MealSheet[];
+  /** Present when the server sent it. */
+  result?: DaySheetResult;
 }
 
 export interface NewEntryInput {
@@ -107,17 +137,76 @@ export function parseEntry(raw: unknown): PlanEntry | null {
   return { id: raw.id, meal: raw.meal, product, dish, grams: amountOf(raw.grams), pieces: amountOf(raw.pieces) };
 }
 
+const STATUSES: readonly string[] = ["green", "yellow", "red", "no_range"];
+const NUTRIENTS: readonly string[] = ["calories", "protein", "fat"];
+
+function numberOrNull(x: unknown): number | null | undefined {
+  if (x === null) return null;
+  return typeof x === "number" ? x : undefined;
+}
+
+function parseNutrient(raw: unknown): NutrientResult | null {
+  if (!isRecord(raw)) return null;
+  const { nutrient, unit, total, status, signed_number: signed } = raw;
+  if (typeof nutrient !== "string" || !NUTRIENTS.includes(nutrient)) return null;
+  if (unit !== "kcal" && unit !== "g") return null;
+  if (typeof total !== "number" || typeof status !== "string" || !STATUSES.includes(status)) return null;
+  const minimum = numberOrNull(raw.minimum);
+  const maximum = numberOrNull(raw.maximum);
+  if (minimum === undefined || maximum === undefined) return null;
+  if (signed !== null && typeof signed !== "string") return null;
+  return {
+    nutrient: nutrient as NutrientResult["nutrient"],
+    unit,
+    total,
+    minimum,
+    maximum,
+    status: status as NutrientStatus,
+    signed_number: signed,
+  };
+}
+
+/** The result of a day: undefined when the response has none, null when it is malformed. */
+export function parseDayResult(raw: unknown): DaySheetResult | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || !Array.isArray(raw.nutrients)) return null;
+  if (raw.ranges_source !== "in_force" && raw.ranges_source !== "closed_copy") return null;
+  const nutrients = raw.nutrients.map(parseNutrient);
+  if (nutrients.some((n) => n === null)) return null;
+  return { ranges_source: raw.ranges_source, nutrients: nutrients as NutrientResult[] };
+}
+
+/** The totals of a meal: undefined when the response has none, null when they are malformed. */
+export function parseMealTotals(raw: unknown): MealTotals | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) return null;
+  const { calories, protein, fat } = raw;
+  if (typeof calories !== "number" || typeof protein !== "number" || typeof fat !== "number") return null;
+  return { calories, protein, fat };
+}
+
 function parseSheet(raw: unknown): DaySheet | null {
   if (!isRecord(raw) || typeof raw.date !== "string" || typeof raw.today !== "string") return null;
   if (typeof raw.closed !== "boolean" || typeof raw.editable !== "boolean" || !Array.isArray(raw.meals)) return null;
+  const result = parseDayResult(raw.result);
+  if (result === null) return null;
   const meals: MealSheet[] = [];
   for (const m of raw.meals) {
     if (!isRecord(m) || !isMeal(m.meal) || !Array.isArray(m.entries)) return null;
     const entries = m.entries.map(parseEntry);
     if (entries.some((e) => e === null)) return null;
-    meals.push({ meal: m.meal, entries: entries as PlanEntry[] });
+    const totals = parseMealTotals(m.totals);
+    if (totals === null) return null;
+    meals.push({ meal: m.meal, entries: entries as PlanEntry[], ...(totals ? { totals } : {}) });
   }
-  return { date: raw.date, today: raw.today, closed: raw.closed, editable: raw.editable, meals };
+  return {
+    date: raw.date,
+    today: raw.today,
+    closed: raw.closed,
+    editable: raw.editable,
+    meals,
+    ...(result ? { result } : {}),
+  };
 }
 
 export function messageOf(body: unknown): string | null {

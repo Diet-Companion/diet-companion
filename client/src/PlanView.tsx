@@ -4,6 +4,7 @@ import { EntryFields } from "./EntryFields";
 import { MEALS, type DaySheet, type Meal, type PlanEntry, type PlanSubject } from "./planApi";
 import { EMPTY_FORM, MEAL_LABELS, formKey, markOf, type FormValues } from "./planLogic";
 import { amountText, type PlanState } from "./planScreenLogic";
+import { DayResultList, MealTotalsLine } from "./SheetResult";
 
 export interface PlanViewProps {
   state: PlanState;
@@ -71,7 +72,8 @@ function EntryRow(props: RowProps) {
 
 function MealBlock(props: { day: DaySheet; meal: Meal; view: PlanViewProps }) {
   const { day, meal, view } = props;
-  const entries = day.meals.find((m) => m.meal === meal)?.entries ?? [];
+  const sheet = day.meals.find((m) => m.meal === meal);
+  const entries = sheet?.entries ?? [];
   const values = view.state.forms[formKey(day.date, meal)] ?? EMPTY_FORM;
   return (
     <section data-testid={`plan-meal-${meal}`}>
@@ -90,6 +92,7 @@ function MealBlock(props: { day: DaySheet; meal: Meal; view: PlanViewProps }) {
           />
         ))}
       </ul>
+      <MealTotalsLine prefix="plan" meal={meal} totals={sheet?.totals} />
       <form
         noValidate
         data-testid={`plan-entry-form-${meal}`}
@@ -137,6 +140,7 @@ export function PlanView(props: PlanViewProps) {
           <h3>{day.date === state.today ? "Today" : "Next day"}</h3>
           <p data-testid="plan-day-date">{day.date}</p>
           {day.closed ? <p>This day is closed.</p> : null}
+          <DayResultList prefix="plan" result={day.result} />
           {MEALS.map((meal) => (
             <MealBlock key={meal} day={day} meal={meal} view={props} />
           ))}
