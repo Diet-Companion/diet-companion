@@ -20,8 +20,19 @@ function logDay(date: string, closed = false): LogDay {
   };
 }
 
-function renderLog(d: LogDay, confirmingClose = false): string {
-  const state: LogState = { today: TODAY, day: d, forms: {}, edits: {}, error: null };
+// A closed day as closeDay returns it: the fixed result is on the sheet.
+function closedWithResult(date: string): LogDay {
+  return {
+    ...logDay(date, true),
+    result: {
+      ranges_source: "closed_copy",
+      nutrients: [{ nutrient: "calories", unit: "kcal", total: 1300, minimum: null, maximum: null, status: "no_range", signed_number: null }],
+    },
+  };
+}
+
+function renderLog(d: LogDay, confirmingClose = false, error: LogState["error"] = null): string {
+  const state: LogState = { today: TODAY, day: d, forms: {}, edits: {}, error };
   return renderToString(
     <LogView
       state={state}
@@ -84,6 +95,25 @@ describe("close control", () => {
     expect(html).not.toContain('data-testid="log-close"');
     expect(html).not.toMatch(/reopen/i);
     expect(renderLog(logDay(TODAY))).not.toContain("log-closed-mark");
+  });
+
+  // cites: REQ-011/AC-001, REQ-011/AC-008, REQ-011/AC-010
+  it("shows log-closed-mark and the returned fixed result on the closed sheet, with no close control", () => {
+    const html = renderLog(closedWithResult(TODAY));
+    expect(html).toContain('data-testid="log-closed-mark"');
+    expect(html).toContain('data-testid="log-result-total-calories">1300<');
+    expect(html).not.toContain('data-testid="log-close"');
+    expect(html).not.toContain("log-close-confirm");
+  });
+
+  // cites: REQ-016/AC-002, REQ-011/AC-003
+  it("shows the day.closed refusal in log-error and keeps the closed mark and the result", () => {
+    const error = { code: "day.closed", reasons: [] as string[], text: "This day is closed and cannot be changed. Nothing was saved." };
+    const html = renderLog(closedWithResult("2026-03-09"), false, error);
+    expect(html).toContain('data-testid="log-error"');
+    expect(html).toContain('data-code="day.closed"');
+    expect(html).toContain('data-testid="log-closed-mark"');
+    expect(html).toContain('data-testid="log-result-total-calories">1300<');
   });
 
   // cites: REQ-011/AC-002

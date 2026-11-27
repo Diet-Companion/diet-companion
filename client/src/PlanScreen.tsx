@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { readReminders, type Reminders } from "./closeLogic";
+import { readReminders } from "./closeLogic";
 import { PlanView } from "./PlanView";
-import type { OpenDaysApi, PlanApi } from "./planApi";
 import {
   changeAmount,
   openPlan,
@@ -16,8 +15,7 @@ import {
 } from "./planScreenLogic";
 
 export interface PlanScreenProps {
-  /** plan may also carry getOpenDays for the close reminder (REQ-011/AC-004); without it no reminder shows. */
-  deps: PlanDeps & { plan: PlanApi & Partial<OpenDaysApi> };
+  deps: PlanDeps;
   onUnauthorized: () => void;
   onBack: () => void;
 }
@@ -29,7 +27,8 @@ export function PlanScreen(props: PlanScreenProps) {
   const { deps, onUnauthorized } = props;
   const [phase, setPhase] = useState<Phase>({ name: "loading" });
   const [busy, setBusy] = useState(false);
-  const [reminders, setReminders] = useState<Reminders>({});
+  // Open days before each shown day, as the server sends them (REQ-011/AC-004). Never blocks planning.
+  const [reminders, setReminders] = useState<Record<string, string[]>>({});
 
   async function load() {
     setPhase({ name: "loading" });
@@ -55,18 +54,17 @@ export function PlanScreen(props: PlanScreenProps) {
     void load();
   }, []);
 
-  // The reminder of each shown day: getOpenDays with before set to that day. It never blocks the screen.
-  const shownDays = phase.name === "ready" ? phase.state.days.map((d) => d.date).join(",") : "";
+  const datesKey = phase.name === "ready" ? phase.state.days.map((d) => d.date).join(",") : "";
   useEffect(() => {
-    if (shownDays === "") return;
-    let current = true;
-    void readReminders(deps.plan, shownDays.split(",")).then((r) => {
-      if (current) setReminders(r);
+    if (datesKey === "") return undefined;
+    let live = true;
+    void readReminders(deps.plan, datesKey.split(",")).then((found) => {
+      if (live) setReminders(found);
     });
     return () => {
-      current = false;
+      live = false;
     };
-  }, [shownDays]);
+  }, [datesKey]);
 
   if (phase.name === "ready") {
     return (

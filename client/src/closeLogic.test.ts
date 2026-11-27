@@ -1,26 +1,24 @@
-import { describe, expect, it } from "vitest";
-import { canClose, closeStep, readReminders } from "./closeLogic";
-import type { LogCloseApi, LogDay } from "./logApi";
-import { submitEntry, type LogDeps, type LogState } from "./logScreenLogic";
-import { MEALS, type OpenDaysApi, type PlanError } from "./planApi";
+import { describe, expect, it, vi } from "vitest";
+import { canClose, confirmClose, readReminders } from "./closeLogic";
+import type { LogCloseResult, LogDay } from "./logApi";
+import { earlierDay, openLog, submitEntry, type LogDeps, type LogState } from "./logScreenLogic";
+import { MEALS, type OpenDaysResult } from "./planApi";
 
 const T = "2026-03-10";
 
-function openDay(date: string): LogDay {
+function day(date: string, closed = false): LogDay {
   return {
     date,
     today: T,
-    closed: false,
-    editable: date <= T,
+    closed,
+    editable: !closed && date <= T,
     meals: MEALS.map((meal) => ({ meal, hasPlan: false, entries: [] })),
   };
 }
 
-function closedCopy(date: string): LogDay {
+function closedWithResult(date: string): LogDay {
   return {
-    ...openDay(date),
-    closed: true,
-    editable: false,
+    ...day(date, true),
     result: {
       ranges_source: "closed_copy",
       nutrients: [{ nutrient: "calories", unit: "kcal", total: 1300, minimum: null, maximum: null, status: "no_range", signed_number: null }],
@@ -28,180 +26,179 @@ function closedCopy(date: string): LogDay {
   };
 }
 
-function stateOf(day: LogDay): LogState {
-  return { today: T, day, forms: {}, edits: {}, error: null };
+function stateOf(d: LogDay): LogState {
+  return { today: T, day: d, forms: {}, edits: {}, error: null };
 }
 
-function refusal(code: string): PlanError {
-  return { code, reasons: [], message: null };
+function depsWith(closeDay: (date: string) => Promise<LogCloseResult>): LogDeps {
+  return { log: { closeDay } } as unknown as LogDeps;
 }
 
-// A fake close API: records the dates it is asked for and answers as the spec says (IF-001@1.6.0#closeDay).
-function fakeClose(refuse: PlanError | null = null) {
-  const calls: string[] = [];
-  const api: LogCloseApi = {
-    async closeDay(date) {
-      calls.push(date);
-      if (refuse) return { kind: "refused", error: refuse };
-      return { kind: "ok", day: closedCopy(date) };
-    },
-  };
-  return { api, calls };
-}
-
-function shownState(next: Awaited<ReturnType<typeof closeStep>>["next"]): LogState {
-  if (next.kind !== "state") throw new Error("expected a state");
-  return next.state;
-}
-
-describe("closeStep", () => {
-  // cites: REQ-011/AC-010, REQ-011/AC-001
-  it("closes an empty day on confirm and shows the returned closed sheet with its result", async () => {
-    const { api, calls } = fakeClose();
-    const asked = await closeStep(api, stateOf(openDay(T)), false, "ask");
-    expect(asked.confirming).toBe(true);
-    const done = await closeStep(api, shownState(asked.next), asked.confirming, "confirm");
-    expect(calls).toEqual([T]);
-    const s = shownState(done.next);
-    expect(done.confirming).toBe(false);
-    expect(s.day.closed).toBe(true);
-    expect(s.day.editable).toBe(false);
-    expect(s.day.result?.nutrients[0]?.total).toBe(1300);
-    expect(s.error).toBeNull();
+describe("canClose", () => {
+  // cites: REQ-011/AC-001, REQ-011/AC-011
+  it("allows an open day that is today or earlier and no other", () => {
+    expect(canClose(day(T))).toBe(true);
+    expect(canClose(day("2026-03-09"))).toBe(true);
+    expect(canClose(day("2026-03-11"))).toBe(false);
+    expect(canClose(day("2026-03-09", true))).toBe(false);
   });
+});
 
-  // cites: REQ-011/AC-008
-  it("closes today before the day has ended", async () => {
-    const { api, calls } = fakeClose();
-    const done = await closeStep(api, stateOf(openDay(T)), true, "confirm");
-    expect(calls).toEqual([T]);
-    expect(shownState(done.next).day.closed).toBe(true);
-  });
-
-  // cites: REQ-011/AC-002
-  it("calls nothing on cancel and the day stays open", async () => {
-    const { api, calls } = fakeClose();
-    const cancelled = await closeStep(api, stateOf(openDay(T)), true, "cancel");
-    expect(calls).toEqual([]);
-    expect(cancelled.confirming).toBe(false);
-    expect(shownState(cancelled.next).day.closed).toBe(false);
-  });
-
-  // cites: REQ-016/AC-003
-  it("never calls closeDay without the confirm step after ask", async () => {
-    const { api, calls } = fakeClose();
-    await closeStep(api, stateOf(openDay(T)), false, "confirm");
-    await closeStep(api, stateOf(openDay(T)), false, "ask");
-    await closeStep(api, stateOf(openDay("2026-03-08")), false, "ask");
-    expect(calls).toEqual([]);
+describe("confirmClose", () => {
+  // cites: REQ-011/AC-010, REQ-011/AC-008
+  it("closes today and an empty day with closeDay and shows the returned sheet with its result", async () => {
+    const closeDay = vi.fn(async (date: string): Promise<LogCloseResult> => ({ kind: "ok", day: closedWithResult(date) }));
+    for (const date of [T, "2026-03-09"]) {
+      const next = await confirmClose(depsWith(closeDay), stateOf(day(date)));
+      if (next.kind !== "state") throw new Error("expected state");
+      expect(next.state.day.date).toBe(date);
+      expect(next.state.day.closed).toBe(true);
+      expect(next.state.day.editable).toBe(false);
+      expect(next.state.day.result?.nutrients[0]?.total).toBe(1300);
+      expect(next.state.error).toBeNull();
+    }
+    expect(closeDay.mock.calls.map((c) => c[0])).toEqual([T, "2026-03-09"]);
   });
 
   // cites: REQ-011/AC-011
-  it("offers no close for a closed day or a day after today, and never calls closeDay for them", async () => {
-    expect(canClose(stateOf(openDay("2026-03-11")))).toBe(false);
-    expect(canClose(stateOf(closedCopy("2026-03-09")))).toBe(false);
-    expect(canClose(stateOf(openDay("2026-03-09")))).toBe(true);
-    const { api, calls } = fakeClose();
-    await closeStep(api, stateOf(openDay("2026-03-11")), true, "confirm");
-    await closeStep(api, stateOf(closedCopy("2026-03-09")), true, "confirm");
-    expect(calls).toEqual([]);
+  it("never calls closeDay for a day after today", async () => {
+    const closeDay = vi.fn(async (date: string): Promise<LogCloseResult> => ({ kind: "ok", day: day(date, true) }));
+    const state = stateOf(day("2026-03-11"));
+    const next = await confirmClose(depsWith(closeDay), state);
+    expect(closeDay).not.toHaveBeenCalled();
+    expect(next).toEqual({ kind: "state", state });
   });
 
-  // cites: REQ-016/AC-002, IF-001@1.6.0#closeDay
-  it("shows a refusal with its code and keeps the day as it was", async () => {
-    for (const code of ["day.closed", "close.day_out_of_range"]) {
-      const { api } = fakeClose(refusal(code));
-      const before = stateOf(openDay(T));
-      const done = await closeStep(api, before, true, "confirm");
-      const s = shownState(done.next);
-      expect(s.error?.code).toBe(code);
-      expect(s.day).toEqual(before.day);
-    }
+  // cites: REQ-016/AC-002, REQ-011/AC-003
+  it("shows a day.closed refusal in the error and keeps the shown day as it was", async () => {
+    const closeDay = async (): Promise<LogCloseResult> => ({
+      kind: "refused",
+      error: { code: "day.closed", reasons: [], message: null },
+    });
+    const state = stateOf(day("2026-03-09"));
+    const next = await confirmClose(depsWith(closeDay), state);
+    if (next.kind !== "state") throw new Error("expected state");
+    expect(next.state.error?.code).toBe("day.closed");
+    expect(next.state.day).toBe(state.day);
   });
 
-  // cites: IF-001@1.6.0#closeDay
-  it("asks for login on unauthorized and shows a failure for a failed call", async () => {
-    const login: LogCloseApi = { closeDay: async () => ({ kind: "unauthorized" }) };
-    expect((await closeStep(login, stateOf(openDay(T)), true, "confirm")).next.kind).toBe("unauthorized");
-    const broken: LogCloseApi = { closeDay: async () => ({ kind: "failed", message: null }) };
-    const s = shownState((await closeStep(broken, stateOf(openDay(T)), true, "confirm")).next);
-    expect(s.error?.code).toBe("failed");
-    expect(s.day.closed).toBe(false);
+  // cites: REQ-011/AC-011
+  it("shows a close.day_out_of_range refusal with its code and changes nothing else", async () => {
+    const closeDay = async (): Promise<LogCloseResult> => ({
+      kind: "refused",
+      error: { code: "close.day_out_of_range", reasons: [], message: null },
+    });
+    const state = stateOf(day(T));
+    const next = await confirmClose(depsWith(closeDay), state);
+    if (next.kind !== "state") throw new Error("expected state");
+    expect(next.state.error?.code).toBe("close.day_out_of_range");
+    expect({ ...next.state, error: null }).toEqual(state);
+  });
+
+  // cites: REQ-011/AC-010
+  it("sends the Owner to login on 401", async () => {
+    const next = await confirmClose(depsWith(async () => ({ kind: "unauthorized" })), stateOf(day(T)));
+    expect(next.kind).toBe("unauthorized");
   });
 });
 
-describe("a write refused on a closed day", () => {
-  // cites: REQ-011/AC-003, REQ-016/AC-002
-  it("keeps the shown totals and result as they were and shows day.closed", async () => {
-    const closed = closedCopy("2026-03-09");
-    const deps = {
-      log: {
-        addLogEntry: async () => ({ kind: "refused" as const, error: refusal("day.closed") }),
-        getDayLog: async () => ({ kind: "ok" as const, day: openDay("2026-03-09") }),
-      },
-    } as unknown as LogDeps;
-    const next = await submitEntry(deps, stateOf(closed), "lunch");
-    if (next.kind !== "state") throw new Error("expected a state");
+describe("a closed day and automatic closing", () => {
+  // cites: REQ-016/AC-002, REQ-011/AC-003
+  it("keeps the closed day's result when a write is refused with day.closed", async () => {
+    const addLogEntry = async () => ({
+      kind: "refused" as const,
+      error: { code: "day.closed", reasons: [] as string[], message: null },
+    });
+    const deps = { log: { addLogEntry } } as unknown as LogDeps;
+    const state = stateOf(closedWithResult("2026-03-09"));
+    const next = await submitEntry(deps, state, "lunch");
+    if (next.kind !== "state") throw new Error("expected state");
     expect(next.state.error?.code).toBe("day.closed");
-    expect(next.state.day).toEqual(closed);
+    expect(next.state.day).toBe(state.day);
     expect(next.state.day.result?.nutrients[0]?.total).toBe(1300);
   });
+
+  // cites: REQ-016/AC-003, REQ-011/AC-002
+  it("does not call closeDay when the log is opened or another day is shown", async () => {
+    const closeDay = vi.fn(async (date: string): Promise<LogCloseResult> => ({ kind: "ok", day: day(date, true) }));
+    const getDayLog = async (date: string) => ({ kind: "ok", day: day(date) });
+    const deps = {
+      log: { getDayLog, closeDay },
+      targets: { getTargetRanges: async () => ({ kind: "ok", ranges: { as_of: T } }) },
+      products: { listProducts: async () => ({ kind: "ok", products: [] }) },
+      dishes: { listDishes: async () => ({ kind: "ok", dishes: [] }) },
+    } as unknown as LogDeps;
+    const opened = await openLog(deps);
+    if (opened.kind !== "ok") throw new Error("expected ok");
+    const earlier = await earlierDay(deps, opened.state);
+    if (earlier.kind !== "state") throw new Error("expected state");
+    expect(earlier.state.day.date).toBe("2026-03-09");
+    expect(earlier.state.day.closed).toBe(false);
+    expect(closeDay).not.toHaveBeenCalled();
+  });
 });
 
-// A fake server of open days: the dates before `before` that are not closed (IF-001@1.6.0#getOpenDays).
-function fakeServer(open: string[]) {
-  const openSet = new Set(open);
+// A fake server: open days before a date, oldest first; closing a day removes it from the list.
+function server(open: string[]) {
+  const set = new Set(open);
   const asked: string[] = [];
-  const api: OpenDaysApi & LogCloseApi = {
-    async getOpenDays(before) {
-      asked.push(before);
-      const days = [...openSet].filter((d) => d < before).sort();
-      return { kind: "ok", open: { firstDayOfUse: null, before, days } };
+  return {
+    asked,
+    plan: {
+      getOpenDays: async (before: string): Promise<OpenDaysResult> => {
+        asked.push(before);
+        return { kind: "ok", days: [...set].filter((d) => d < before).sort() };
+      },
     },
-    async closeDay(date) {
-      openSet.delete(date);
-      return { kind: "ok", day: closedCopy(date) };
-    },
+    close: (d: string) => set.delete(d),
   };
-  return { api, asked };
 }
 
 describe("readReminders", () => {
   // cites: REQ-011/AC-004, REQ-011/AC-012
-  it("reminds of today, open, while the next day is planned, asking before each shown day", async () => {
-    const { api, asked } = fakeServer([T]);
-    const r = await readReminders(api, [T, "2026-03-11"]);
-    expect(asked).toEqual([T, "2026-03-11"]);
-    expect(r).toEqual({ "2026-03-11": [T] });
+  it("asks once per shown day with before set to that day, and keeps today open while planning the next day", async () => {
+    const s = server([T]);
+    const found = await readReminders(s.plan, [T, "2026-03-11"]);
+    expect([...s.asked].sort()).toEqual([T, "2026-03-11"]);
+    expect(found).toEqual({ "2026-03-11": [T] });
   });
 
   // cites: REQ-011/AC-013
-  it("reminds of D-2 open with D-1 closed while today is planned", async () => {
-    const { api } = fakeServer(["2026-03-08"]);
-    const r = await readReminders(api, [T]);
-    expect(r[T]).toEqual(["2026-03-08"]);
+  it("lists D-2 open while planning today when D-1 is closed, taking the dates as the server sends them", async () => {
+    const s = server(["2026-03-08"]);
+    const found = await readReminders(s.plan, [T]);
+    expect(found).toEqual({ [T]: ["2026-03-08"] });
+  });
+
+  // cites: REQ-011/AC-004
+  it("keeps the server's order", async () => {
+    const plan = { getOpenDays: async (): Promise<OpenDaysResult> => ({ kind: "ok", days: ["2026-03-07", "2026-03-08", "2026-03-09"] }) };
+    expect(await readReminders(plan, [T])).toEqual({ [T]: ["2026-03-07", "2026-03-08", "2026-03-09"] });
   });
 
   // cites: REQ-011/AC-006, REQ-011/AC-011
   it("has no reminder when days is empty", async () => {
-    const { api } = fakeServer([]);
-    expect(await readReminders(api, [T, "2026-03-11"])).toEqual({});
+    expect(await readReminders(server([]).plan, [T, "2026-03-11"])).toEqual({});
   });
 
   // cites: REQ-011/AC-012
-  it("has no reminder when getOpenDays fails or is not available, and does not throw", async () => {
-    const failing: OpenDaysApi = { getOpenDays: async () => ({ kind: "failed", message: null }) };
-    expect(await readReminders(failing, [T])).toEqual({});
+  it("has no reminder, and does not throw, when the read fails, is refused, throws or does not exist", async () => {
+    expect(await readReminders({ getOpenDays: async () => ({ kind: "failed", message: null }) }, [T])).toEqual({});
+    expect(await readReminders({ getOpenDays: async () => ({ kind: "unauthorized" }) }, [T])).toEqual({});
+    const throwing = {
+      getOpenDays: async (): Promise<OpenDaysResult> => {
+        throw new Error("offline");
+      },
+    };
+    expect(await readReminders(throwing, [T])).toEqual({});
     expect(await readReminders({}, [T])).toEqual({});
   });
 
   // cites: REQ-016/AC-006
-  it("keeps D-1 in the next reminder after D is closed", async () => {
-    const { api } = fakeServer(["2026-03-09", T]);
-    const before = await readReminders(api, ["2026-03-11"]);
-    expect(before["2026-03-11"]).toEqual(["2026-03-09", T]);
-    await closeStep(api, stateOf(openDay(T)), true, "confirm");
-    const after = await readReminders(api, ["2026-03-11"]);
-    expect(after["2026-03-11"]).toEqual(["2026-03-09"]);
+  it("after closing D, the next reminder still lists D-1", async () => {
+    const s = server(["2026-03-09", T]);
+    expect(await readReminders(s.plan, ["2026-03-11"])).toEqual({ "2026-03-11": ["2026-03-09", T] });
+    s.close(T);
+    expect(await readReminders(s.plan, ["2026-03-11"])).toEqual({ "2026-03-11": ["2026-03-09"] });
   });
 });

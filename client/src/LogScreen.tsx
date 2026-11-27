@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { closeStep, type CloseAction } from "./closeLogic";
+import { confirmClose } from "./closeLogic";
 import { LogView } from "./LogView";
 import {
   changeAmount,
@@ -34,8 +34,8 @@ export function LogScreen(props: LogScreenProps) {
   const { deps, onUnauthorized } = props;
   const [phase, setPhase] = useState<Phase>({ name: "loading" });
   const [busy, setBusy] = useState(false);
-  // True while the close confirmation is asked. Only its confirm button calls closeDay (REQ-016/AC-003).
-  const [confirming, setConfirming] = useState(false);
+  // The close prompt is only screen state: asking and cancelling call nothing (REQ-011/AC-002).
+  const [confirmingClose, setConfirmingClose] = useState(false);
 
   async function load() {
     setPhase({ name: "loading" });
@@ -57,20 +57,6 @@ export function LogScreen(props: LogScreenProps) {
     setPhase((p) => (p.name === "ready" ? { ...p, state: next.state } : p));
   }
 
-  async function close(action: CloseAction) {
-    if (phase.name !== "ready" || busy) return;
-    setBusy(true);
-    const result = await closeStep(deps.log, phase.state, confirming, action);
-    setBusy(false);
-    setConfirming(result.confirming);
-    if (result.next.kind === "unauthorized") {
-      onUnauthorized();
-      return;
-    }
-    const next = result.next;
-    setPhase((p) => (p.name === "ready" ? { ...p, state: next.state } : p));
-  }
-
   useEffect(() => {
     void load();
   }, []);
@@ -82,10 +68,13 @@ export function LogScreen(props: LogScreenProps) {
         products={phase.catalogs.products}
         dishes={phase.catalogs.dishes}
         busy={busy}
-        confirmingClose={confirming}
-        onClose={() => void close("ask")}
-        onCloseConfirm={() => void close("confirm")}
-        onCloseCancel={() => void close("cancel")}
+        confirmingClose={confirmingClose}
+        onClose={() => setConfirmingClose(true)}
+        onCloseCancel={() => setConfirmingClose(false)}
+        onCloseConfirm={() => {
+          setConfirmingClose(false);
+          void run((s) => confirmClose(deps, s));
+        }}
         onForm={(meal, values) =>
           setPhase((p) => (p.name === "ready" ? { ...p, state: setForm(p.state, meal, values) } : p))
         }
@@ -95,11 +84,11 @@ export function LogScreen(props: LogScreenProps) {
         onRemove={(entry) => void run((s) => removeEntry(deps, s, entry))}
         onConfirm={(meal) => void run((s) => confirmMeal(deps, s, meal))}
         onEarlier={() => {
-          setConfirming(false);
+          setConfirmingClose(false);
           void run((s) => earlierDay(deps, s));
         }}
         onLater={() => {
-          setConfirming(false);
+          setConfirmingClose(false);
           void run((s) => laterDay(deps, s));
         }}
         onBack={props.onBack}

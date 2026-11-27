@@ -29,7 +29,7 @@ export interface LogViewProps {
   onSplitDish?: (meal: Meal, dishId: string) => void;
   onSplitLine?: (meal: Meal, position: number, values: { grams: string; pieces: string }) => void;
   onSplitSave?: (meal: Meal) => void;
-  /** Close control (REQ-011/AC-001, AC-002): true while the confirmation is asked. */
+  /** Close control (REQ-011/AC-001, AC-002): asks first; only confirm closes the day. */
   confirmingClose?: boolean;
   onClose?: () => void;
   onCloseConfirm?: () => void;
@@ -137,8 +137,9 @@ function MealBlock(props: { meal: Meal; logMeal: LogMeal | undefined; view: LogV
   );
 }
 
+// The close control: shown on an open day that is not after the server's today (REQ-011/AC-001).
 function CloseControl(props: LogViewProps) {
-  if (!canClose(props.state)) return null;
+  if (!canClose(props.state.day)) return null;
   if (!props.confirmingClose) {
     return (
       <button type="button" disabled={props.busy} onClick={() => props.onClose?.()} data-testid="log-close">

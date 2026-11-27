@@ -1,5 +1,5 @@
-// IF-001@1.6.0 plan operations (REQ-013): getDayPlan, addPlanEntry, changePlanEntry, removePlanEntry,
-// and getOpenDays for the close reminder (REQ-011). Fetch and run id are injected.
+// IF-001@1.6.0 plan operations (REQ-013): getDayPlan, addPlanEntry, changePlanEntry, removePlanEntry;
+// getOpenDays for the close reminder (REQ-011). Fetch and run id are injected.
 // Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
@@ -104,15 +104,9 @@ export type RemoveResult =
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
 
-/** IF-001 OpenDays: the open dates before a day, oldest first, as the server sends them. */
-export interface OpenDays {
-  firstDayOfUse: string | null;
-  before: string;
-  days: string[];
-}
-
+/** The open days before a date, as the server sends them: oldest first (REQ-011/AC-004). */
 export type OpenDaysResult =
-  | { kind: "ok"; open: OpenDays }
+  | { kind: "ok"; days: string[] }
   | { kind: "unauthorized" }
   | { kind: "failed"; message: string | null };
 
@@ -123,7 +117,7 @@ export interface PlanApi {
   removePlanEntry(date: string, entryId: string): Promise<RemoveResult>;
 }
 
-export interface OpenDaysApi {
+export interface PlanOpenApi {
   getOpenDays(before: string): Promise<OpenDaysResult>;
 }
 
@@ -226,13 +220,11 @@ function parseSheet(raw: unknown): DaySheet | null {
   };
 }
 
-// The dates are taken as the server sends them, never worked out in the client.
-function parseOpenDays(raw: unknown): OpenDays | null {
-  if (!isRecord(raw) || typeof raw.before !== "string" || !Array.isArray(raw.days)) return null;
-  if (!raw.days.every((d) => typeof d === "string")) return null;
-  const first = raw.first_day_of_use;
-  if (first !== null && first !== undefined && typeof first !== "string") return null;
-  return { firstDayOfUse: typeof first === "string" ? first : null, before: raw.before, days: raw.days as string[] };
+// The dates of an OpenDays body, in the order sent; null when the body is not one.
+function parseOpenDays(raw: unknown): string[] | null {
+  if (!isRecord(raw) || !Array.isArray(raw.days)) return null;
+  const days = raw.days;
+  return days.every((d) => typeof d === "string") ? (days as string[]) : null;
 }
 
 export function messageOf(body: unknown): string | null {
@@ -245,7 +237,7 @@ export function refusal(status: number, body: unknown): PlanError | null {
   return { code: body.code, reasons, message: messageOf(body) };
 }
 
-export function createPlanApi(fetchFn: FetchLike, newRunId: () => string): PlanApi & OpenDaysApi {
+export function createPlanApi(fetchFn: FetchLike, newRunId: () => string): PlanApi & PlanOpenApi {
   async function send(method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown } | null> {
     try {
       const headers: Record<string, string> = { "X-Run-Id": newRunId() };
@@ -307,13 +299,12 @@ export function createPlanApi(fetchFn: FetchLike, newRunId: () => string): PlanA
       return error ? { kind: "refused", error } : { kind: "failed", message: messageOf(r.body) };
     },
 
-    // GET /days/open?before=D: 200 OpenDays. Any other answer is a failure; the reminder is then not shown.
     async getOpenDays(before) {
       const r = await send("GET", `/days/open?before=${encodeURIComponent(before)}`);
       if (!r) return { kind: "failed", message: null };
       if (r.status === 401) return { kind: "unauthorized" };
-      const open = r.status === 200 ? parseOpenDays(r.body) : null;
-      return open ? { kind: "ok", open } : { kind: "failed", message: messageOf(r.body) };
+      const days = r.status === 200 ? parseOpenDays(r.body) : null;
+      return days ? { kind: "ok", days } : { kind: "failed", message: messageOf(r.body) };
     },
   };
 }

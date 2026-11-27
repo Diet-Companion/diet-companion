@@ -1,6 +1,5 @@
 // IF-001@1.6.0 log operations (REQ-014): getDayLog, addLogEntry, changeLogEntry, removeLogEntry,
-// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010); closeDay (REQ-011, REQ-016).
-// Fetch and run id are injected.
+// confirmMealAsPlanned, and addLogDishProducts (REQ-014/AC-005, AC-010); closeDay (REQ-011). Fetch and run id are injected.
 // Types follow architecture/system/interfaces/IF-001/openapi-1.6.0.json.
 
 import type { FetchLike } from "./api";
@@ -243,7 +242,6 @@ export function createLogApi(fetchFn: FetchLike, newRunId: () => string): LogApi
       return { kind: "refused", error: p.error, lines: r ? refusedLines(r.body) : [] };
     },
 
-    // POST /days/{date}/close: 200 is the day's log sheet; 409 day.closed and 422 close.day_out_of_range are refusals.
     async closeDay(date) {
       const r = await send("POST", `/days/${encodeURIComponent(date)}/close`);
       if (r && r.status === 200) {

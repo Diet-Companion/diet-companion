@@ -11,8 +11,8 @@ export interface PlanViewProps {
   products: Product[];
   dishes: Dish[];
   busy: boolean;
-  /** Open days to remind about, by plan day, as the server sent them (REQ-011/AC-004, AC-006). */
-  reminders?: Record<string, string[]>;
+  /** Open days before each shown day, oldest first, as the server sent them; a day without any has no entry. */
+  reminders?: Record<string, string[]> | undefined;
   onForm: (date: string, meal: Meal, values: FormValues) => void;
   onSubmit: (date: string, meal: Meal) => void;
   onEdit: (entryId: string, text: string) => void;
@@ -23,6 +23,26 @@ export interface PlanViewProps {
 
 function subjectText(s: PlanSubject): string {
   return `${s.name}${markOf(s)}`;
+}
+
+// The close reminder of a day: nothing when no day is open. It never blocks the forms (REQ-011/AC-012, AC-013).
+function CloseReminder(props: { dates: string[] | undefined }) {
+  const dates = props.dates ?? [];
+  if (dates.length === 0) return null;
+  return (
+    <div role="status" data-testid="close-reminder">
+      <p>
+        Days still open: <span data-testid="close-reminder-count">{dates.length}</span>
+      </p>
+      <ul>
+        {dates.map((d) => (
+          <li key={d} data-testid={`close-reminder-day-${d}`}>
+            {d}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 type RowProps = { date: string; entry: PlanEntry; edit: string | undefined } & Pick<
@@ -119,24 +139,6 @@ function MealBlock(props: { day: DaySheet; meal: Meal; view: PlanViewProps }) {
   );
 }
 
-// Informs only: it has no control and never blocks the plan (REQ-011/AC-012, AC-013).
-function CloseReminder(props: { days: string[] }) {
-  return (
-    <section data-testid="close-reminder">
-      <p>
-        Days still open: <span data-testid="close-reminder-count">{props.days.length}</span>
-      </p>
-      <ul>
-        {props.days.map((d) => (
-          <li key={d} data-testid={`close-reminder-day-${d}`}>
-            {d}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 export function PlanView(props: PlanViewProps) {
   const { state } = props;
   return (
@@ -155,21 +157,18 @@ export function PlanView(props: PlanViewProps) {
           {state.error.text}
         </p>
       ) : null}
-      {state.days.map((day) => {
-        const open = props.reminders?.[day.date] ?? [];
-        return (
-          <section key={day.date} data-testid={`plan-day-${day.date}`} data-date={day.date}>
-            <h3>{day.date === state.today ? "Today" : "Next day"}</h3>
-            <p data-testid="plan-day-date">{day.date}</p>
-            {day.closed ? <p>This day is closed.</p> : null}
-            {open.length > 0 ? <CloseReminder days={open} /> : null}
-            <DayResultList prefix="plan" result={day.result} />
-            {MEALS.map((meal) => (
-              <MealBlock key={meal} day={day} meal={meal} view={props} />
-            ))}
-          </section>
-        );
-      })}
+      {state.days.map((day) => (
+        <section key={day.date} data-testid={`plan-day-${day.date}`} data-date={day.date}>
+          <h3>{day.date === state.today ? "Today" : "Next day"}</h3>
+          <p data-testid="plan-day-date">{day.date}</p>
+          {day.closed ? <p>This day is closed.</p> : null}
+          <CloseReminder dates={props.reminders?.[day.date]} />
+          <DayResultList prefix="plan" result={day.result} />
+          {MEALS.map((meal) => (
+            <MealBlock key={meal} day={day} meal={meal} view={props} />
+          ))}
+        </section>
+      ))}
     </section>
   );
 }

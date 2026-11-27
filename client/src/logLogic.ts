@@ -31,7 +31,6 @@ const LOG_CODE_TEXT: Record<string, string> = {
   "log.meal_not_empty": "This meal already has log entries, so the plan cannot be confirmed. Nothing was saved.",
   "plan.meal_empty": "This meal has no plan to confirm. Nothing was logged.",
   "day.closed": "This day is closed and cannot be changed. Nothing was saved.",
-  "close.day_out_of_range": "This day cannot be closed. Nothing was changed.",
 };
 
 export function logErrorText(error: PlanError): string {
