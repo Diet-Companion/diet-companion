@@ -7,6 +7,7 @@ import { LogSplit } from "./LogSplit";
 import { amountText, type LogState } from "./logScreenLogic";
 import { MEALS, type Meal, type PlanSubject } from "./planApi";
 import { EMPTY_FORM, MEAL_LABELS, formKey, markOf, type FormValues } from "./planLogic";
+import { DayResultList, MealTotalsLine } from "./SheetResult";
 
 export interface LogViewProps {
   state: LogState;
@@ -95,6 +96,7 @@ function MealBlock(props: { meal: Meal; logMeal: LogMeal | undefined; view: LogV
           />
         ))}
       </ul>
+      <MealTotalsLine prefix="log" meal={meal} totals={logMeal?.totals} />
       <form
         noValidate
         data-testid={`log-entry-form-${meal}`}
@@ -154,6 +156,7 @@ export function LogView(props: LogViewProps) {
         </button>
       ) : null}
       {day.closed ? <p>This day is closed.</p> : null}
+      <DayResultList prefix="log" result={day.result} />
       {MEALS.map((meal) => (
         <MealBlock key={meal} meal={meal} logMeal={day.meals.find((m) => m.meal === meal)} view={props} />
       ))}
